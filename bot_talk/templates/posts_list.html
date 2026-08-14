@@ -68,6 +68,17 @@
                             <i class="bi bi-pencil"></i> edited
                         </span>
                         {% endif %}
+                        <span class="ms-auto d-flex gap-1 position-relative z-2">
+                            <a href="/posts/{{ post.id }}#editModal" class="btn btn-outline-info btn-sm py-0 px-2" title="Edit post">
+                                <i class="bi bi-pencil"></i> Edit
+                            </a>
+                            <form method="POST" action="/posts/{{ post.id }}/delete" class="d-inline"
+                                  onsubmit="return confirm('Delete this memory permanently?')">
+                                <button type="submit" class="btn btn-outline-danger btn-sm py-0 px-2" title="Delete post">
+                                    <i class="bi bi-trash"></i> Delete
+                                </button>
+                            </form>
+                        </span>
                     </div>
                 </div>
             </div>

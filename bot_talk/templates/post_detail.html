@@ -244,4 +244,12 @@
     </div>
 </div>
 
+<script>
+    if (window.location.hash === '#editModal') {
+        window.addEventListener('DOMContentLoaded', function () {
+            bootstrap.Modal.getOrCreateInstance(document.getElementById('editModal')).show();
+        });
+    }
+</script>
+
 {% endblock %}
