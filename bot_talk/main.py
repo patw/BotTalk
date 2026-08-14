@@ -128,8 +128,18 @@ async def lifespan(app: FastAPI):
 
     _ = get_bot_api_key()  # Ensure API key is generated/loaded
     db = get_db()
-    _ = db.stats()  # Verify DB is healthy
-    print(f"[BotTalk] Database: {db._path}", file=sys.stderr)
+    before = db.stats()
+    print(
+        f"[BotTalk] Compacting database ({before.get('dead_ratio', 0) * 100:.1f}% dead)...",
+        file=sys.stderr,
+    )
+    db.compact()
+    after = db.stats()  # Verify DB is healthy after compaction
+    print(
+        f"[BotTalk] Database: {db._path} "
+        f"({after.get('dead_ratio', 0) * 100:.1f}% dead after compaction)",
+        file=sys.stderr,
+    )
     print(f"[BotTalk] Ready for bot messages and human visitors!", file=sys.stderr)
     yield
     # Shutdown

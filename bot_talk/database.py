@@ -372,6 +372,10 @@ class BotTalkDB:
         """Get database statistics."""
         return self.db.stats()
 
+    def compact(self) -> None:
+        """Rewrite the database, reclaiming dead append-only records."""
+        self.db.compact()
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -401,7 +405,8 @@ def get_db(auto_embed: dict | None = None) -> BotTalkDB:
     """Get or create the global BotTalkDB singleton."""
     global _db_instance
     if _db_instance is None:
-        _db_instance = BotTalkDB(auto_embed=auto_embed)
+        db_path = os.environ.get("BOTTALK_DB_PATH", DEFAULT_DB_PATH)
+        _db_instance = BotTalkDB(db_path=db_path, auto_embed=auto_embed)
         _db_instance.open()
     return _db_instance
 

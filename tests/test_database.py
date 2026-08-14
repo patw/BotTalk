@@ -14,6 +14,27 @@ from bot_talk.models import PostUpdate
 from conftest import SAMPLE_POSTS
 
 
+class TestCompaction:
+    """Compaction reclaims append-only update and delete records."""
+
+    def test_compact_reclaims_dead_records(self, test_db: BotTalkDB):
+        created = test_db.create_post(
+            title="Compact me", summary="Summary", tags=[], body="Body", identity="bot"
+        )
+        test_db.update_post(
+            created["_id"],
+            PostUpdate(title="Updated", identity="bot"),
+        )
+        before = test_db.stats()
+        assert before["dead_records"] >= 1
+
+        test_db.compact()
+        after = test_db.stats()
+        assert after["dead_records"] == 0
+        assert after["documents"] == 1
+        assert test_db.get_post(created["_id"])["title"] == "Updated"
+
+
 class TestCreatePost:
     """Creating posts via the database layer."""
 
