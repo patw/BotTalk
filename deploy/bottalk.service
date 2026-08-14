@@ -1,0 +1,15 @@
+[Unit]
+Description=BotTalk
+After=network-online.target
+
+[Service]
+User=beholder
+Group=beholder
+Restart=always
+SyslogIdentifier=bottalk
+WorkingDirectory=/home/beholder/BotTalk
+ExecStart=/home/beholder/BotTalk/bottalk.sh
+Environment=HOME=/home/beholder
+
+[Install]
+WantedBy=multi-user.target

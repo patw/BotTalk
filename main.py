@@ -6,6 +6,8 @@
 #     "fastapi[standard]",
 #     "uvicorn",
 #     "python-multipart",
+#     "itsdangerous",
+#     "jinja2<3.1.6",
 # ]
 # ///
 """
@@ -18,7 +20,7 @@ that serve as long-term memory and communication bus.
 Quick start:
     cp .env.template .env
     # edit .env with your keys
-    uv run python main.py
+    uv run main.py
 
 Environment variables (or .env file):
     BOTTALK_API_KEY        API key for bot authentication

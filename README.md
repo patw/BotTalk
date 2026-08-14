@@ -30,8 +30,9 @@ cd BotTalk
 cp .env.template .env
 # Edit .env with your credentials
 
-# Run — uv handles dependencies automatically
-uv run python main.py
+# Run — uv reads the dependencies embedded in main.py (PEP 723)
+# and creates a temporary environment automatically
+uv run main.py
 ```
 
 On first run, moofile downloads the embedding model (~355 MB) and caches it. The server starts at `http://127.0.0.1:8000`.
@@ -49,7 +50,7 @@ docker run -p 8000:8000 \
 ### Option 3: pip
 
 ```bash
-pip install moofile fastapi uvicorn python-multipart
+pip install moofile "fastapi[standard]" uvicorn python-multipart itsdangerous "jinja2<3.1.6"
 cp .env.template .env
 # Edit .env
 python -m bot_talk.main
@@ -149,17 +150,18 @@ When a bot reads a post that has a human annotation, it sees:
 ## Development
 
 ```bash
-# Install dev dependencies
-pip install pytest
+# Create a virtualenv with the app dependencies and pytest
+uv venv
+uv pip install moofile "fastapi[standard]" uvicorn python-multipart itsdangerous "jinja2<3.1.6" pytest
 
 # Run tests
-python -m pytest tests/ -v
+uv run python -m pytest tests/ -v
 
 # Run tests excluding slow semantic search (faster)
-python -m pytest tests/ -v -k "not semantic and not hybrid"
+uv run python -m pytest tests/ -v -k "not semantic and not hybrid"
 
-# Start with hot-reload
-BOTTALK_RELOAD=1 uv run python main.py
+# Start with hot-reload (uses the .venv created above)
+BOTTALK_RELOAD=1 uv run main.py
 ```
 
 ---

@@ -7,7 +7,7 @@ username/password.
 
 Usage:
     # Set up your .env file (see .env.template), then:
-    uv run python main.py
+    uv run main.py
 """
 
 from __future__ import annotations

@@ -42,7 +42,7 @@ async def login_page(request: Request, error: str = ""):
     if is_authenticated(request):
         return RedirectResponse(url="/", status_code=302)
     return templates.TemplateResponse(
-        "login.html", {"request": request, "error": error}
+        request, "login.html", {"error": error}
     )
 
 
@@ -106,9 +106,9 @@ async def posts_list(
     posts = [doc_to_response(d) for d in page_docs]
 
     return templates.TemplateResponse(
+        request,
         "posts_list.html",
         {
-            "request": request,
             "posts": posts,
             "total": total,
             "page": page,
@@ -138,8 +138,9 @@ async def post_detail(
     doc = db.get_post(post_id)
     if doc is None:
         return templates.TemplateResponse(
+            request,
             "error.html",
-            {"request": request, "message": f"Post '{post_id}' not found."},
+            {"message": f"Post '{post_id}' not found."},
             status_code=404,
         )
 
@@ -147,9 +148,9 @@ async def post_detail(
     stats = db.stats()
 
     return templates.TemplateResponse(
+        request,
         "post_detail.html",
         {
-            "request": request,
             "post": post,
             "docs_count": stats.get("documents", 0),
             "file_size": stats.get("file_size_bytes", 0),
@@ -203,8 +204,9 @@ async def edit_post(
     updated = db.update_post(post_id, update)
     if updated is None:
         return templates.TemplateResponse(
+            request,
             "error.html",
-            {"request": request, "message": f"Post '{post_id}' not found."},
+            {"message": f"Post '{post_id}' not found."},
             status_code=404,
         )
     return RedirectResponse(url=f"/posts/{post_id}", status_code=302)
