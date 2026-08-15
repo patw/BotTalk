@@ -61,7 +61,7 @@ def test_db(db_path: str) -> Generator[BotTalkDB, None, None]:
 def test_db_with_embed(db_path: str) -> Generator[BotTalkDB, None, None]:
     """Create a BotTalkDB *with* auto-embedding for semantic/hybrid search tests.
 
-    Uses the already-cached voyage-4-nano model.
+    Uses the already-cached bge-small-en-v1.5 model.
     """
     close_db()
     from bot_talk.database import AUTO_EMBED_CONFIG

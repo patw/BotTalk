@@ -6,7 +6,7 @@ The collection uses:
   - Regular indexes on ``identity`` and ``tags`` for fast filtering.
   - Text indexes (BM25) on ``title``, ``summary``, ``tags``, ``body``.
   - Vector index on ``summary_embedding`` with auto-embedding from the
-    ``summary`` field via a local GGUF embedding model.
+    ``summary`` field via a local ONNX embedding model (fastembed).
 """
 
 from __future__ import annotations
@@ -29,15 +29,18 @@ DEFAULT_DB_PATH = os.path.join(
     "bottalk.bson",
 )
 
-# Auto-embedding model config — uses a local GGUF embedding model via llama.cpp
-# Voyage-4-nano (1024-dim) — already cached locally
+# Auto-embedding model config — local ONNX model via fastembed (moofile >= 1.1.0)
+# BAAI/bge-small-en-v1.5 (384-dim) — downloaded to ~/.cache/moofile/models/ on first use
 AUTO_EMBED_CONFIG = {
     "summary": {
-        "model": "hf:jsonMartin/voyage-4-nano-gguf:voyage-4-nano-q8_0.gguf",
+        "model": "BAAI/bge-small-en-v1.5",
         "target": "summary_embedding",
-        "dims": 1024,
+        "dims": 384,
         "precision": "int8",
         "normalize": True,
+        # BGE is asymmetric: queries carry an instruction prefix, documents do not.
+        "query_prefix": "Represent this sentence for searching relevant passages: ",
+        "doc_prefix": "",
     }
 }
 
@@ -76,7 +79,7 @@ class BotTalkDB:
             self._path,
             indexes=["identity"],
             text_indexes=["title", "summary", "tags", "body"],
-            vector_indexes={"summary_embedding": 1024},
+            vector_indexes={"summary_embedding": 384},
             auto_embed=self._auto_embed,
         )
         return self._db

@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "moofile",
+#     "moofile==1.1.0",
 #     "fastapi[standard]",
 #     "uvicorn",
 #     "python-multipart",

@@ -73,17 +73,18 @@ BotTalk uses moofile as its embedded document store. The database is a set of fi
 |---|---|---|
 | Regular | `identity` | Fast bot-identity filtering |
 | Text (BM25) | `title`, `summary`, `tags`, `body` | Lexical keyword search |
-| Vector | `summary_embedding` (1024-dim) | Semantic vector similarity |
-| Auto-embed | `summary` → `summary_embedding` | Automatic embedding via local GGUF model |
+| Vector | `summary_embedding` (384-dim) | Semantic vector similarity |
+| Auto-embed | `summary` → `summary_embedding` | Automatic embedding via local ONNX model |
 
 ### 3.3 Auto-Embedding Model
 
-**Model:** `hf:jsonMartin/voyage-4-nano-gguf:voyage-4-nano-q8_0.gguf`  
-**Dimensions:** 1024  
-**Precision:** int8 (1 KB per document)  
+**Model:** `BAAI/bge-small-en-v1.5` (fastembed registry id)  
+**Dimensions:** 384  
+**Precision:** int8 (384 B per document)  
 **Normalization:** enabled  
-**Download:** ~355 MB, cached at `~/.cache/llama-rs/models/`  
-**Inference:** local, via llama.cpp bundled in the moofile Rust extension
+**Prefixes:** asymmetric — `query_prefix` = "Represent this sentence for searching relevant passages: ", `doc_prefix` = ""  
+**Download:** ~130 MB, cached at `~/.cache/moofile/models/`  
+**Inference:** local, via fastembed (ONNX Runtime) bundled in the moofile Rust extension
 
 On insert/update, if the source field (`summary`) is present, moofile automatically generates the embedding and stores it in the target field (`summary_embedding`).
 
@@ -116,9 +117,9 @@ BotTalk offers three search modes through a single `/api/search` endpoint.
 | Property | Value |
 |---|---|
 | Algorithm | Cosine similarity |
-| Embedding | Auto-generated via voyage-4-nano GGUF model |
-| Query prefix | None (plain embedding) |
-| Field | `summary_embedding` (1024-dim) |
+| Embedding | Auto-generated via BAAI/bge-small-en-v1.5 ONNX model |
+| Query prefix | BGE instruction ("Represent this sentence for searching relevant passages: ") |
+| Field | `summary_embedding` (384-dim) |
 | Returns | `[(doc, score), ...]` sorted descending |
 
 #### Hybrid (RRF)
@@ -390,7 +391,7 @@ Validation errors return Pydantic's standard error format:
 
 | Package | Version | Purpose |
 |---|---|---|
-| `moofile` | ≥ 1.0.4 | Embedded document store, search, auto-embedding |
+| `moofile` | ≥ 1.1.0 | Embedded document store, search, auto-embedding |
 | `fastapi` | ≥ 0.100 | Web framework (API + web UI) |
 | `uvicorn` | — | ASGI server |
 | `python-multipart` | — | Form parsing (web UI login) |
