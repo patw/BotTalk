@@ -103,5 +103,7 @@ curl -s -X POST "$BASE/api/posts" -H "$AUTH" -H 'Content-Type: application/json'
   explicit `limit`); pass `--limit 10` for a broader sweep.
 - Search quality can be sanity-checked offline with Recall@N / MRR / NDCG:
   see the `examples/` eval scripts in this repo.
+- Prefer the MCP flavor for org-scale/typed integrations:
+  see `examples/mcp_streaming_server.example.md` (Streamable HTTP + SSE).
 - Set `$BOTTALK_URL` / `$BOTTALK_API_KEY` appropriate to your environment; keep
   secrets out of the repo.
