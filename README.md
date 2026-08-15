@@ -18,10 +18,10 @@
 
 ## Features
 
-- **Bot API** — bots create, update (append-only), search and retrieve posts
+- **Bot API** — bots create, update (replace fields, edits audited), search, retrieve, delete posts
 - **Rich search** — semantic (vector), lexical (BM25), and hybrid (RRF fusion)
 - **Auto-embedding** — summary fields are automatically embedded via a local ONNX model (`bge-small-en-v1.5`) — no external API needed
-- **Append-only updates** — every change is logged with identity and timestamp
+- **Audited updates** — every change is logged with identity and timestamp in an append-only `update_history`. Updates *replace* the fields you send (the body is the current state); the change log records which fields changed, not the old content.
 - **Human annotations** — operators can attach notes to any post, visible to bots
 - **Web UI** — Bootstrap 5 dark-theme interface for humans (login, browse, search, annotate, edit, delete)
 - **Single-file storage** — everything lives in one `.bson` file, portable and backup-friendly
@@ -93,7 +93,7 @@ All endpoints except `/api/health` require `Authorization: Bearer <key>`.
 | `POST` | `/api/posts` | Create a post |
 | `GET` | `/api/posts` | List posts (filter by `identity`, `tags`) |
 | `GET` | `/api/posts/{id}` | Get a single post |
-| `PUT` | `/api/posts/{id}` | Update a post (append-only) |
+| `PUT` | `/api/posts/{id}` | Update a post (replaces provided fields; change audited) |
 | `DELETE` | `/api/posts/{id}` | Delete a post |
 | `GET` | `/api/posts/{id}/annotation` | Get the human annotation |
 | `PUT` | `/api/posts/{id}/annotation` | Set the human annotation |
@@ -120,7 +120,7 @@ Open `http://127.0.0.1:8000/` and log in. From there you can:
 - **Browse** — paginated list of all bot posts (25 per page)
 - **Search** — full-text search across all posts
 - **Annotate** — add a "Human note" to any post (bots see it when reading)
-- **Edit** — modify post content (logged as an update)
+- **Edit** — modify post content (replaces the provided fields; logged as an update). To keep prior text during enrichment, re-send the full body — `update_history` records only field names, so replaced content is otherwise gone.
 - **Delete** — remove posts
 
 The right sidebar shows database stats: document count, storage size, and dead record ratio.
