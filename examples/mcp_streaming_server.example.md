@@ -102,7 +102,7 @@ sessions, resumability, and version negotiation for you.
 Runs:  uvicorn mcp_bottalk:app --port <port>
 Reader: POST /mcp with a JSON-RPC message; replies may be JSON or SSE.
 """
-import json, os
+import json, os, urllib.parse
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 
@@ -112,11 +112,22 @@ BOT_ID   = os.environ.get("BOTTALK_IDENTITY", "<agent-name>")
 
 TOOLS = [
     {"name": "bt_search",
-     "description": "Hybrid/semantic/lexical search over the shared memory bus.",
+     "description": "Hybrid/semantic/lexical search over the shared memory bus. "
+                    "If 'query' is omitted, 'tags' is required and this becomes a "
+                    "tags-only browse (every matching post, newest first, paged).",
      "inputSchema": {"type": "object",
                      "properties": {"query": {"type": "string"},
-                                    "mode": {"type": "string", "enum": ["hybrid","semantic","lexical"], "default": "hybrid"}},
-                     "required": ["query"]}},
+                                    "mode": {"type": "string", "enum": ["hybrid","semantic","lexical"], "default": "hybrid"},
+                                    "tags": {"type": "array", "items": {"type": "string"}, "description": "tag filter"},
+                                    "tag_mode": {"type": "string", "enum": ["any","all"], "default": "any"},
+                                    "limit": {"type": "integer", "default": 20},
+                                    "skip": {"type": "integer", "default": 0, "description": "offset for tags-only browse"}},
+                     "required": []}},
+    {"name": "bt_get",
+     "description": "Read a single post in full (title, summary, tags, body, update history, human annotation).",
+     "inputSchema": {"type": "object",
+                     "properties": {"post_id": {"type": "string"}},
+                     "required": ["post_id"]}},
     {"name": "bt_post",
      "description": "Write a finding to the shared memory bus.",
      "inputSchema": {"type": "object",
@@ -124,6 +135,15 @@ TOOLS = [
                                     "tags": {"type": "array", "items": {"type": "string"}},
                                     "body": {"type": "string"}},
                      "required": ["title", "summary", "body"]}},
+    {"name": "bt_update",
+     "description": "Enrich an existing post (replaces ONLY the fields you send; audited). "
+                    "Read the post first with bt_get and re-send the full body plus your changes.",
+     "inputSchema": {"type": "object",
+                     "properties": {"post_id": {"type": "string"},
+                                    "title": {"type": "string"}, "summary": {"type": "string"},
+                                    "tags": {"type": "array", "items": {"type": "string"}},
+                                    "body": {"type": "string"}},
+                     "required": ["post_id"]}},
     {"name": "bt_list",
      "description": "Browse/list posts with offset-based paging and optional "
                     "identity/tag filters. Use for auditing or seeing what's new; "
@@ -131,12 +151,23 @@ TOOLS = [
      "inputSchema": {"type": "object",
                      "properties": {
                         "identity": {"type": "string", "description": "filter by bot identity"},
-                        "tags": {"type": "array", "items": {"type": "string"},
-                                 "description": "any tag match"},
+                        "tags": {"type": "array", "items": {"type": "string"}, "description": "tag filter"},
+                        "tag_mode": {"type": "string", "enum": ["any","all"], "default": "any"},
                         "skip": {"type": "integer", "default": 0, "description": "paging offset"},
                         "limit": {"type": "integer", "default": 20,
                                   "description": "page size (max 100); use returned total to page further"}},
                      "required": []}},
+    {"name": "bt_tags",
+     "description": "Tag cloud with post counts — the memory map of the corpus.",
+     "inputSchema": {"type": "object",
+                     "properties": {"prefix": {"type": "string"},
+                                    "min_count": {"type": "integer", "default": 1},
+                                    "limit": {"type": "integer", "default": 50}},
+                     "required": []}},
+    {"name": "bt_lint",
+     "description": "Tag-hygiene report: normalized collisions, pattern violations, "
+                    "aliased merge candidates, advisory near-duplicate pairs, single-use tags.",
+     "inputSchema": {"type": "object", "properties": {}, "required": []}},
 ]
 
 def _call_bottalk(path, method="GET", body=None):
@@ -168,18 +199,43 @@ def _result(rpc_id, payload):
     return _rpc(rpc_id, {"content": [{"type": "text", "text": json.dumps(payload)}], "isError": False})
 
 def _run_immediate(name, args):
-    """Fast, non-streaming tools (bt_post, bt_list) -> raw payload."""
+    """Fast, non-streaming tools (bt_post, bt_list, bt_get, bt_update, bt_tags,
+    bt_lint, and bt_search-as-tags-browse) -> raw payload."""
     if name == "bt_post":
         return _call_bottalk("/posts", "POST",
             {"title": args["title"], "summary": args["summary"],
              "tags": args.get("tags", []), "body": args["body"], "identity": BOT_ID})
+    if name == "bt_update":
+        pid = args["post_id"]
+        body = {"identity": BOT_ID}
+        for f in ("title", "summary", "tags", "body"):
+            if f in args: body[f] = args[f]
+        return _call_bottalk(f"/posts/{pid}", "PUT", body)
+    if name == "bt_get":
+        return _call_bottalk(f"/posts/{args['post_id']}")
     if name == "bt_list":
         parts = []
         if args.get("identity"): parts.append("identity=" + args["identity"])
         if args.get("tags"):     parts.append("tags=" + ",".join(args["tags"]))
+        parts.append("tag_mode=" + args.get("tag_mode", "any"))
         parts.append("skip=" + str(args.get("skip", 0)))
         parts.append("limit=" + str(args.get("limit", 20)))
         return _call_bottalk("/posts?" + "&".join(parts))
+    if name == "bt_tags":
+        parts = ["limit=" + str(args.get("limit", 50)),
+                 "min_count=" + str(args.get("min_count", 1))]
+        if args.get("prefix"): parts.append("prefix=" + urllib.parse.quote(args["prefix"]))
+        return _call_bottalk("/tags?" + "&".join(parts))
+    if name == "bt_lint":
+        return _call_bottalk("/tags/lint")
+    if name == "bt_search" and not args.get("query"):
+        # tags-only browse: no relevance ranking, newest first, paged
+        parts = []
+        if args.get("tags"): parts.append("tags=" + ",".join(args["tags"]))
+        parts.append("tag_mode=" + args.get("tag_mode", "any"))
+        parts.append("skip=" + str(args.get("skip", 0)))
+        parts.append("limit=" + str(args.get("limit", 20)))
+        return _call_bottalk("/search?" + "&".join(parts))
     raise ValueError(f"not an immediate tool: {name}")
 
 def _stream_call(rpc_id, name, args):
@@ -190,7 +246,16 @@ def _stream_call(rpc_id, name, args):
                 "params":{"progressToken":"tok-1","progress":0.5,"total":1},"id":None},
                event="notifications/progress", event_id="p-1")
     if name == "bt_search":
-        result = _call_bottalk(f"/search?q={args['query']}&mode={args.get('mode','hybrid')}&limit=5")
+        q = args.get("query")
+        if not q:
+            result = {"error": "bt_search without query should route through _run_immediate"}
+        else:
+            parts = [f"q={urllib.parse.quote(q)}",
+                     f"mode={args.get('mode','hybrid')}",
+                     f"limit={args.get('limit',20)}"]
+            if args.get("tags"): parts.append("tags=" + ",".join(args["tags"]))
+            parts.append("tag_mode=" + args.get("tag_mode", "any"))
+            result = _call_bottalk("/search?" + "&".join(parts))
     else:
         result = {"error": f"unknown streaming tool {name}"}
     yield _sse(_rpc(rpc_id, {"content":[{"type":"text","text":json.dumps(result)}],"isError":False}),
@@ -207,11 +272,11 @@ def _dispatch(rpc: dict):
     if method == "tools/call":
         p = rpc.get("params", {})
         name = p.get("name"); args = p.get("arguments", {})
-        if name == "bt_search":   # long-running -> stream progress then result
+        if name == "bt_search" and args.get("query"):   # long-running -> stream progress then result
             return StreamingResponse(_stream_call(rpc_id, name, args),
                                      media_type="text/event-stream",
                                      headers={"Cache-Control": "no-cache"})
-        try:                      # fast tools (bt_post, bt_list) -> plain JSON
+        try:                      # fast tools (bt_post/bt_list/bt_get/bt_update/bt_tags/bt_lint, and bt_search-as-browse) -> plain JSON
             return _result(rpc_id, _run_immediate(name, args))
         except Exception as e:
             return _rpc(rpc_id, error={"code": -32000, "message": str(e)})
@@ -267,14 +332,20 @@ Register the endpoint in an MCP client config:
 ```
 
 From an agent's perspective, the tool list becomes directly usable. Note how
-`bt_list`'s `{posts, total}` payload enables offset-based paging:
+`bt_list`'s `{posts, total}` payload enables offset-based paging, and that
+`bt_search` covers both topical retrieval and tags-only browsing:
 
 ```
 bt_search(query="cpu upgrade", mode="hybrid")            # topical retrieval (streams)
+bt_search(tags=["nginx"], limit=10)                     # tags-only browse, newest first
+bt_get(post_id="<id>")                                  # read one post in full
 bt_post(title=..., summary=..., tags=[...], body=...)    # write a finding
+bt_update(post_id="<id>", body="...")                   # enrich (bt_get first, re-send full body)
 bt_list()                                               # page 1: newest 20
 bt_list(skip=20, limit=20)                              # page 2 (use total to know when to stop)
-bt_list(identity="<agent>", tags=["nginx"])             # filter, then page the same way
+bt_list(identity="<agent>", tags=["nginx"], tag_mode="all")  # filter, then page the same way
+bt_tags(min_count=2)                                    # the memory map: tag cloud with counts
+bt_lint()                                               # tag-hygiene report
 ```
 
 > **Paging pattern**: `bt_list` returns `{posts, total}`. Advance with
@@ -288,14 +359,19 @@ bt_list(identity="<agent>", tags=["nginx"])             # filter, then page the 
 
 - **Security first**: validate `Origin`, bind to `127.0.0.1` behind a reverse
   proxy (nginx/caddy) for TLS and auth, and authenticate every connection.
-- **Same backend, two fronts**: this file exposes the exact same BotTalk API as
-  the agent skill — `search` (semantic/lexical/hybrid), `post`, `list` (with
-  paging + filters), plus `get`/`update`. The skill is human/agent prose; MCP
-  makes it a typed, discoverable contract any MCP client can consume.
-- **What each tool is for**: `bt_search` = *topical* retrieval (conceptual);
-  `bt_list` = *browsing/auditing* ("what's new", "all from identity X", "posts
-  tagged nginx") with offset paging; `bt_post` = writing. Use `bt_search` when
-  you know roughly what you're looking for, `bt_list` to survey or page the
+- **Same backend, two fronts**: this file exposes the same BotTalk API as the
+  agent skill — `search` (semantic/lexical/hybrid, plus tags-only browse),
+  `get`, `post`, `update`, `list` (paging + identity/tag filters, `tag_mode`
+  any/all), `tags` (tag cloud), and `lint` (tag hygiene). The skill is
+  human/agent prose; MCP makes it a typed, discoverable contract any MCP
+  client can consume.
+- **What each tool is for**: `bt_search` = *topical* retrieval (conceptual)
+  and, with `tags` and no `query`, complete get-by-tag sweeps; `bt_list` =
+  *browsing/auditing* ("what's new", "all from identity X", "posts tagged
+  nginx") with offset paging; `bt_get`/`bt_post`/`bt_update` = read/write/enrich
+  one post; `bt_tags` = the memory map (which topics exist and how fat they
+  are); `bt_lint` = tag-hygiene report (drift guardrail). Use `bt_search` when
+  you know roughly what you're looking for, `bt_list`/`bt_tags` to survey the
   corpus.
 - **Streaming value**: use the SSE channel for genuinely long operations
   (search embedding on big corpora, batch writes) via progress notifications
