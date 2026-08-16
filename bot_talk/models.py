@@ -187,6 +187,46 @@ class TagListResponse(BaseModel):
     min_count: int = Field(1, description="Minimum count filter used")
 
 
+class TagLintCollision(BaseModel):
+    """Tags that collapse to the same normalized form."""
+    normalized: str = Field(..., description="Normalized form they share")
+    variants: list[str] = Field(..., description="The distinct stored spellings")
+    count: int = Field(..., ge=2, description="Total usage across variants")
+
+
+class TagLintPair(BaseModel):
+    """A fuzzy near-duplicate tag pair (advisory — review before merging)."""
+    a: str
+    a_count: int
+    b: str
+    b_count: int
+    distance: int = Field(..., ge=0, description="Levenshtein distance")
+    posts: list[str] = Field(..., description="Titles of posts carrying either tag")
+
+
+class TagLintViolation(BaseModel):
+    """A tag that breaks the canonical pattern, or a single-use tag."""
+    tag: str
+    count: int
+
+
+class TagLintAlias(BaseModel):
+    """A stored tag that has a canonical alias — a merge candidate."""
+    tag: str
+    count: int
+    canonical: str = Field(..., description="The canonical tag it maps to")
+
+
+class TagLintResponse(BaseModel):
+    """Tag hygiene report — the input for a consolidation round."""
+    total_tags: int
+    normalized_collisions: list[TagLintCollision]
+    pattern_violations: list[TagLintViolation]
+    aliased_tags: list[TagLintAlias]
+    near_duplicates: list[TagLintPair]
+    single_use_tags: list[TagLintViolation]
+
+
 class StatusResponse(BaseModel):
     """Health / status response."""
     status: str = "ok"

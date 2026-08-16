@@ -304,6 +304,99 @@ class TestTags:
         assert len(data["tags"]) == 2
         assert data["total"] == 9  # total unaffected by limit
 
+    def test_post_normalizes_and_coerces_tags(self, client: TestClient):
+        """Write-time guardrails: format variants + aliases become canonical."""
+        resp = client.post(
+            "/api/posts",
+            json={
+                "title": "Norm", "summary": "s",
+                "tags": ["Open Source", "skills", "openai_proxy", "v1.2.0"],
+                "body": "b", "identity": "bot",
+            },
+            headers=self.AUTH,
+        )
+        assert resp.status_code == status.HTTP_201_CREATED
+        assert resp.json()["tags"] == ["open-source", "skill", "llmproxy", "v1.2.0"]
+
+    def test_search_alias_expansion(self, client: TestClient):
+        """Querying a legacy spelling still finds the canonical posts."""
+        client.post(
+            "/api/posts",
+            json={"title": "P", "summary": "s", "tags": ["llmproxy", "flask"],
+                  "body": "b", "identity": "bot"},
+            headers=self.AUTH,
+        )
+        resp = client.get("/api/search?tags=openai-proxy", headers=self.AUTH)
+        assert resp.status_code == status.HTTP_200_OK
+        assert resp.json()["total"] == 1
+        assert resp.json()["mode"] == "tags"
+
+        resp = client.get("/api/search?tags=openai_proxy,flask&tag_mode=all", headers=self.AUTH)
+        assert resp.json()["total"] == 1
+
+    def test_list_alias_expansion(self, client: TestClient):
+        client.post(
+            "/api/posts",
+            json={"title": "P", "summary": "s", "tags": ["llmproxy", "flask"],
+                  "body": "b", "identity": "bot"},
+            headers=self.AUTH,
+        )
+        resp = client.get("/api/posts?tags=openai-proxy", headers=self.AUTH)
+        assert resp.json()["total"] == 1
+
+
+class TestTagsLint:
+    """GET /api/tags/lint — tag hygiene report."""
+
+    AUTH = {"Authorization": "Bearer test-api-key-12345"}
+
+    def test_lint_requires_auth(self, client: TestClient):
+        resp = client.get("/api/tags/lint")
+        assert resp.status_code == status.HTTP_401_UNAUTHORIZED
+
+    def test_lint_empty(self, client: TestClient):
+        resp = client.get("/api/tags/lint", headers=self.AUTH)
+        assert resp.status_code == status.HTTP_200_OK
+        d = resp.json()
+        assert d["total_tags"] == 0
+        assert d["normalized_collisions"] == []
+        assert d["pattern_violations"] == []
+        assert d["aliased_tags"] == []
+        assert d["near_duplicates"] == []
+        assert d["single_use_tags"] == []
+
+    def test_lint_report(self, client: TestClient):
+        client.post(
+            "/api/posts",
+            json={"title": "A", "summary": "s", "tags": ["pengy", "pengyr", "once"],
+                  "body": "b", "identity": "bot"},
+            headers=self.AUTH,
+        )
+        client.post(
+            "/api/posts",
+            json={"title": "B", "summary": "s", "tags": ["pengy", "pengyr"],
+                  "body": "b", "identity": "bot"},
+            headers=self.AUTH,
+        )
+        resp = client.get("/api/tags/lint", headers=self.AUTH)
+        d = resp.json()
+        assert d["total_tags"] == 3
+        assert d["pattern_violations"] == []
+        assert d["aliased_tags"] == []
+        assert any(p["a"] == "pengy" and p["b"] == "pengyr" for p in d["near_duplicates"])
+        assert any(t["tag"] == "once" for t in d["single_use_tags"])
+
+    def test_write_normalization_prevents_bad_tags(self, client: TestClient):
+        """New writes can no longer create pattern-violating tags."""
+        client.post(
+            "/api/posts",
+            json={"title": "A", "summary": "s", "tags": ["Weird_Tag", "Upper.Case"],
+                  "body": "b", "identity": "bot"},
+            headers=self.AUTH,
+        )
+        resp = client.get("/api/tags/lint", headers=self.AUTH)
+        assert resp.json()["pattern_violations"] == []
+
 
 class TestUpdatePost:
     """PUT /api/posts/{id} — updating posts."""

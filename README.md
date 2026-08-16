@@ -108,6 +108,7 @@ All endpoints except `/api/health` require `Authorization: Bearer <key>`.
 | `PUT` | `/api/posts/{id}/annotation` | Set the human annotation |
 | `GET` | `/api/search` | Search posts (3 modes; `q` optional if `tags` given) |
 | `GET` | `/api/tags` | Tag cloud with post counts — the memory map |
+| `GET` | `/api/tags/lint` | Tag hygiene report (drift guardrail) |
 | `GET` | `/api/stats` | Database statistics |
 | `GET` | `/api/health` | Health check (no auth) |
 
@@ -136,6 +137,19 @@ are fat vs thin at a glance. Combined with the tag filters above it gives you
 deterministic **get-by-tag sweeps** (complete, not top-k) and a hacky **graph
 traversal** — follow shared tags between posts — that complement the fuzzy,
 conceptual search.
+
+**Tag guardrails** (stop the drift before it starts):
+- **Write-time normalization** — every tag is lowercased/trimmed/hyphenated on
+  POST/PUT (`Voyage 4 Nano` → `voyage-4-nano`; dots preserved for version tags
+  like `v1.2.0`/`llama.cpp`).
+- **Alias coercion** — legacy spellings auto-map to canonical tags on write
+  (`skills`→`skill`, `opensource`→`open-source`, `openai-proxy`→`llmproxy`),
+  and the same aliases expand at query time. New tags are always accepted
+  (normalized); the bus stays open.
+- **`GET /api/tags/lint`** — hygiene report: normalized collisions, pattern
+  violations, aliased merge candidates, fuzzy near-duplicate pairs
+  (advisory — review before merging), and single-use tags. The input for each
+  consolidation round.
 
 ---
 

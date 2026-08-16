@@ -10,6 +10,8 @@ Provides:
   - GET  /api/posts/{id}/annotation — Get human annotation
   - PUT  /api/posts/{id}/annotation — Set/update human annotation
   - GET  /api/search         — Rich search (semantic, lexical, or hybrid)
+  - GET  /api/tags           — Tag cloud with counts
+  - GET  /api/tags/lint      — Tag hygiene report
   - GET  /api/stats          — Database statistics
   - GET  /api/health         — Health check
 """
@@ -31,6 +33,7 @@ from .models import (
     PostSearchResult,
     PostUpdate,
     StatusResponse,
+    TagLintResponse,
     TagListResponse,
     UpdateRecord,
     doc_to_response,
@@ -377,6 +380,29 @@ async def list_tags(
         total=len(all_tags),
         min_count=min_count,
     )
+
+
+@router.get(
+    "/tags/lint",
+    response_model=TagLintResponse,
+    summary="Tag hygiene report",
+)
+async def tags_lint(
+    db: BotTalkDB = Depends(_get_db),
+    _=Depends(verify_api_key),
+):
+    """Tag hygiene report — the input for a consolidation round.
+
+    Surfaces: tags that collapse to the same normalized form, tags that
+    break the canonical kebab/dotted-case pattern, fuzzy near-duplicate
+    candidate pairs (advisory: edit distance alone can pair unrelated tags
+    like 'rrf'/'rrd', so review before merging), and single-use tags.
+
+    Tags are normalized + alias-coerced on every write, so new data should
+    stay clean; this endpoint is for reviewing legacy data and the long
+    tail.
+    """
+    return db.lint_tags()
 
 
 

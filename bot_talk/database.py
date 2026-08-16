@@ -12,7 +12,8 @@ The collection uses:
 from __future__ import annotations
 
 import os
-from collections import Counter
+import re
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -54,6 +55,55 @@ AUTO_EMBED_CONFIG = {
 # Max results for any search
 MAX_SEARCH_LIMIT = 100
 DEFAULT_SEARCH_LIMIT = 20
+
+
+# ---------------------------------------------------------------------------
+# Tag normalization & aliases
+# ---------------------------------------------------------------------------
+
+# Canonical tag pattern: lowercase alphanumeric tokens joined by a single
+# hyphen or dot (dots preserve version tags like 'v1.2.0' / 'llama.cpp').
+TAG_RE = re.compile(r"^[a-z0-9]+([.-][a-z0-9]+)*$")
+MAX_TAG_LEN = 50
+
+# Legacy spellings / synonyms -> canonical tag.  Consulted at write time
+# (new tags are coerced to the canonical form) and at query time (searching
+# any spelling still finds the posts).  Add entries here when the lint
+# surfaces a genuine duplicate.
+TAG_ALIASES = {
+    "skills": "skill",
+    "opensource": "open-source",
+    "openai-proxy": "llmproxy",
+    "max_length": "max-length",
+}
+
+
+def normalize_tag(tag: str) -> str:
+    """Normalize a raw tag to canonical kebab/dotted-case form.
+
+    Lowercases, trims, and collapses runs of non-alphanumeric characters to
+    a single hyphen, preserving dots so version tags ('v1.2.0', 'llama.cpp')
+    survive.  'Voyage 4 Nano', 'voyage_4_nano' and 'VOYAGE 4 NANO' all
+    become 'voyage-4-nano'.
+    """
+    t = re.sub(r"[^a-z0-9.]+", "-", tag.strip().lower())
+    t = re.sub(r"-{2,}", "-", t)
+    t = re.sub(r"\.{2,}", ".", t)
+    t = t.strip("-.")
+    return t[:MAX_TAG_LEN] if len(t) > MAX_TAG_LEN else t
+
+
+def _levenshtein(a: str, b: str) -> int:
+    """Edit distance, bounded cheaply for short tag pairs."""
+    if abs(len(a) - len(b)) > 3:
+        return 99
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +190,7 @@ class BotTalkDB:
         doc = {
             "title": title,
             "summary": summary,
-            "tags": tags,
+            "tags": self._canonicalize_tags(tags),
             "body": body,
             "identity": identity,
             "created_at": datetime.now(timezone.utc),
@@ -168,6 +218,7 @@ class BotTalkDB:
         ``"all"`` (posts carrying EVERY one of ``tags``).
         Returns (documents, total_count).
         """
+        tags = self._expand_query_tags(tags, tag_mode)
         filter_dict = self._build_search_filter(identity, tags, tag_mode)
 
         # Count matching documents
@@ -207,8 +258,11 @@ class BotTalkDB:
             set_fields["summary"] = update.summary
             changes_parts.append("summary")
 
-        if update.tags is not None and update.tags != doc.get("tags"):
-            set_fields["tags"] = update.tags
+        new_tags = (
+            self._canonicalize_tags(update.tags) if update.tags is not None else None
+        )
+        if new_tags is not None and new_tags != doc.get("tags"):
+            set_fields["tags"] = new_tags
             changes_parts.append("tags")
 
         if update.body is not None and update.body != doc.get("body"):
@@ -275,6 +329,7 @@ class BotTalkDB:
         The query text is embedded automatically using the configured GGUF model.
         Returns ``[(doc, score), ...]`` sorted by relevance (descending).
         """
+        tags = self._expand_query_tags(tags, tag_mode)
         pre_filter = self._build_search_filter(identity, tags, tag_mode)
         return (
             self.db.find(pre_filter)
@@ -296,6 +351,7 @@ class BotTalkDB:
         Returns ``[(doc, score), ...]`` sorted by relevance (descending).
         Results are combined and deduplicated across fields.
         """
+        tags = self._expand_query_tags(tags, tag_mode)
         pre_filter = self._build_search_filter(identity, tags, tag_mode)
 
         # Search across all text-indexed fields
@@ -337,6 +393,7 @@ class BotTalkDB:
         The semantic leg uses auto-embedding on the query text.
         Both result sets are combined using Reciprocal Rank Fusion.
         """
+        tags = self._expand_query_tags(tags, tag_mode)
         pre_filter = self._build_search_filter(identity, tags, tag_mode)
 
         # Get both result sets
@@ -421,6 +478,142 @@ class BotTalkDB:
         ]
         tags.sort(key=lambda t: (-t["count"], t["tag"]))
         return tags
+
+    def _known_tag_lookup(self) -> dict[str, str]:
+        """Map normalized tag -> canonical stored form.
+
+        Combines the existing vocabulary (so format variants of a live tag
+        coerce to it) with ``TAG_ALIASES`` (which take precedence, so legacy
+        spellings always map to their canonical target).
+        """
+        lookup: dict[str, str] = {}
+        for entry in self.list_tags():
+            lookup[normalize_tag(entry["tag"])] = entry["tag"]
+        for alias, canon in TAG_ALIASES.items():
+            lookup[normalize_tag(alias)] = canon
+        return lookup
+
+    def _canonicalize_tags(self, tags: list[str] | None) -> list[str]:
+        """Normalize + coerce tags to canonical stored forms (write path).
+
+        Format variants of an existing tag and known aliases map to the
+        canonical spelling; genuinely new tags are stored in normalized
+        kebab/dotted case.  Empty results and duplicates are dropped.
+        """
+        if not tags:
+            return []
+        lookup = self._known_tag_lookup()
+        out: list[str] = []
+        for tag in tags:
+            nt = normalize_tag(tag)
+            if not nt:
+                continue
+            canon = lookup.get(nt, nt)
+            if canon not in out:
+                out.append(canon)
+        return out
+
+    def _expand_query_tags(
+        self, tags: list[str] | None, tag_mode: str
+    ) -> list[str] | None:
+        """Canonicalize query tags so aliases / legacy spellings still match.
+
+        In ``any`` mode both the canonical form and the (normalized) original
+        spelling are kept so pre-migration tags still match; in ``all`` mode
+        only the canonical form is used (requiring every listed tag on a
+        post).  Returns ``None`` when there is nothing to filter on.
+        """
+        if not tags:
+            return None
+        lookup = self._known_tag_lookup()
+        expanded: list[str] = []
+        for tag in tags:
+            nt = normalize_tag(tag)
+            canon = lookup.get(nt, nt)
+            if canon not in expanded:
+                expanded.append(canon)
+            if tag_mode != "all" and nt != canon and nt not in expanded:
+                expanded.append(nt)
+        return expanded
+
+    def lint_tags(self, fuzzy_limit: int = 40) -> dict:
+        """Tag hygiene report — the input for a consolidation round.
+
+        Returns normalized-form collisions, tags that break the canonical
+        pattern, fuzzy near-duplicate candidate pairs (advisory: edit
+        distance alone can pair unrelated tags like 'rrf'/'rrd'), and the
+        single-use (long-tail) tags.
+        """
+        docs = self.db.find({}).to_list()
+        counts: Counter[str] = Counter()
+        tag_posts: dict[str, list[str]] = defaultdict(list)
+        for d in docs:
+            for t in d.get("tags") or []:
+                counts[t] += 1
+                tag_posts[t].append(str(d.get("title", ""))[:70])
+
+        tags_sorted = sorted(counts)
+
+        norm_groups: dict[str, list[str]] = defaultdict(list)
+        for t in tags_sorted:
+            norm_groups[normalize_tag(t)].append(t)
+        collisions = [
+            {
+                "normalized": n,
+                "variants": v,
+                "count": sum(counts[x] for x in v),
+            }
+            for n, v in sorted(norm_groups.items())
+            if len(v) > 1
+        ]
+
+        violations = [
+            {"tag": t, "count": counts[t]}
+            for t in tags_sorted
+            if not TAG_RE.match(t)
+        ]
+
+        aliased = [
+            {
+                "tag": t,
+                "count": counts[t],
+                "canonical": TAG_ALIASES[nt],
+            }
+            for t in tags_sorted
+            if (nt := normalize_tag(t)) in TAG_ALIASES and TAG_ALIASES[nt] != t
+        ]
+        aliased.sort(key=lambda a: (-a["count"], a["tag"]))
+
+        pairs: list[dict] = []
+        for i in range(len(tags_sorted)):
+            for j in range(i + 1, len(tags_sorted)):
+                a, b = tags_sorted[i], tags_sorted[j]
+                d = _levenshtein(a, b)
+                if d <= 2 and min(len(a), len(b)) >= 4:
+                    pairs.append(
+                        {
+                            "a": a,
+                            "a_count": counts[a],
+                            "b": b,
+                            "b_count": counts[b],
+                            "distance": d,
+                            "posts": sorted(set(tag_posts[a] + tag_posts[b]))[:6],
+                        }
+                    )
+        pairs.sort(
+            key=lambda p: (p["distance"], -max(p["a_count"], p["b_count"]), p["a"])
+        )
+
+        return {
+            "total_tags": len(tags_sorted),
+            "normalized_collisions": collisions,
+            "pattern_violations": violations,
+            "aliased_tags": aliased,
+            "near_duplicates": pairs[:fuzzy_limit],
+            "single_use_tags": [
+                {"tag": t, "count": 1} for t in tags_sorted if counts[t] == 1
+            ],
+        }
 
 
 

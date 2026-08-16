@@ -216,6 +216,153 @@ class TestListTags:
         assert ones == sorted(ones)
 
 
+class TestTagNormalization:
+    """Write-time normalization + alias coercion (the drift guardrails)."""
+
+    def _seed_canonical(self, test_db: BotTalkDB):
+        """A post establishing the canonical vocabulary."""
+        test_db.create_post(
+            title="Vocab", summary="s",
+            tags=["open-source", "llmproxy", "skill"],
+            body="b", identity="bot",
+        )
+
+    def test_create_normalizes_format_variants(self, test_db: BotTalkDB):
+        self._seed_canonical(test_db)
+        doc = test_db.create_post(
+            title="T", summary="s",
+            tags=["Open Source", "voyage_4_nano", "  AI  ", "open_source"],
+            body="b", identity="bot",
+        )
+        assert doc["tags"] == ["open-source", "voyage-4-nano", "ai"]
+
+    def test_create_coerces_aliases(self, test_db: BotTalkDB):
+        self._seed_canonical(test_db)
+        doc = test_db.create_post(
+            title="T", summary="s",
+            tags=["skills", "opensource", "openai-proxy"],
+            body="b", identity="bot",
+        )
+        assert doc["tags"] == ["skill", "open-source", "llmproxy"]
+
+    def test_create_keeps_version_tags(self, test_db: BotTalkDB):
+        doc = test_db.create_post(
+            title="T", summary="s",
+            tags=["v1.2.0", "llama.cpp", "Time Series"],
+            body="b", identity="bot",
+        )
+        assert doc["tags"] == ["v1.2.0", "llama.cpp", "time-series"]
+
+    def test_create_dedup_after_coercion(self, test_db: BotTalkDB):
+        self._seed_canonical(test_db)
+        doc = test_db.create_post(
+            title="T", summary="s",
+            tags=["skills", "skill", "open_source", "Open Source"],
+            body="b", identity="bot",
+        )
+        assert doc["tags"] == ["skill", "open-source"]
+
+    def test_update_coerces_tags(self, test_db: BotTalkDB):
+        doc = test_db.create_post(
+            title="T", summary="s", tags=["a"], body="b", identity="bot",
+        )
+        updated = test_db.update_post(
+            doc["_id"], PostUpdate(identity="bot", tags=["SKILLS", "openai_proxy"])
+        )
+        assert updated["tags"] == ["skill", "llmproxy"]
+
+    def test_query_alias_expansion_any(self, test_db: BotTalkDB):
+        self._seed_canonical(test_db)
+        docs, total = test_db.list_posts(tags=["opensource", "skills"], tag_mode="any")
+        assert total == 1
+
+    def test_query_alias_expansion_all(self, test_db: BotTalkDB):
+        self._seed_canonical(test_db)
+        docs, total = test_db.list_posts(tags=["opensource", "llmproxy"], tag_mode="all")
+        assert total == 1
+        docs, total = test_db.list_posts(
+            tags=["opensource", "nonexistent"], tag_mode="all"
+        )
+        assert total == 0
+
+    def test_alias_canonicalizes_legacy_form(self, test_db: BotTalkDB):
+        doc = test_db.create_post(
+            title="T", summary="s", tags=["max_length"], body="b", identity="bot",
+        )
+        assert doc["tags"] == ["max-length"]
+
+    def test_alias_overrides_sticky_known_vocab(self, test_db: BotTalkDB):
+        """A legacy spelling already in the vocab must not win over its alias."""
+        from datetime import datetime, timezone
+        test_db.db.insert({
+            "title": "Legacy", "summary": "s", "tags": ["max_length"],
+            "body": "b", "identity": "bot",
+            "created_at": datetime.now(timezone.utc), "updated_at": None,
+            "update_history": [], "human_annotation": None,
+        })
+        doc = test_db.create_post(
+            title="T", summary="s", tags=["max-length"], body="b", identity="bot",
+        )
+        assert doc["tags"] == ["max-length"]
+
+
+class TestLintTags:
+    """Tag hygiene report — lint_tags()."""
+
+    def _raw_insert(self, test_db: BotTalkDB, title: str, tags: list[str]):
+        """Insert a legacy-style doc directly, bypassing write normalization."""
+        from datetime import datetime, timezone
+        test_db.db.insert({
+            "title": title, "summary": "s", "tags": tags, "body": "b",
+            "identity": "bot", "created_at": datetime.now(timezone.utc),
+            "updated_at": None, "update_history": [], "human_annotation": None,
+        })
+
+    def test_lint_empty(self, test_db: BotTalkDB):
+        rep = test_db.lint_tags()
+        assert rep["total_tags"] == 0
+        assert rep["normalized_collisions"] == []
+        assert rep["pattern_violations"] == []
+        assert rep["aliased_tags"] == []
+        assert rep["near_duplicates"] == []
+        assert rep["single_use_tags"] == []
+
+    def test_lint_normalized_collision(self, test_db: BotTalkDB):
+        """Case/space/underscore variants collapse to the same form."""
+        self._raw_insert(test_db, "A", ["Open Source", "b"])
+        self._raw_insert(test_db, "B", ["open_source", "c"])
+        rep = test_db.lint_tags()
+        assert len(rep["normalized_collisions"]) == 1
+        c = rep["normalized_collisions"][0]
+        assert c["normalized"] == "open-source"
+        assert set(c["variants"]) == {"Open Source", "open_source"}
+
+    def test_lint_aliased_tags(self, test_db: BotTalkDB):
+        """Stored tags with a known alias are merge candidates."""
+        self._raw_insert(test_db, "A", ["opensource", "skills", "ok"])
+        rep = test_db.lint_tags()
+        aliased = {a["tag"]: a["canonical"] for a in rep["aliased_tags"]}
+        assert aliased == {"opensource": "open-source", "skills": "skill"}
+
+    def test_lint_pattern_violation(self, test_db: BotTalkDB):
+        self._raw_insert(test_db, "A", ["Weird_Tag", "b"])
+        rep = test_db.lint_tags()
+        assert rep["pattern_violations"] == [{"tag": "Weird_Tag", "count": 1}]
+
+    def test_lint_near_duplicates(self, test_db: BotTalkDB):
+        self._raw_insert(test_db, "A", ["pengy"])
+        self._raw_insert(test_db, "B", ["pengyr"])
+        rep = test_db.lint_tags()
+        assert any(p["a"] == "pengy" and p["b"] == "pengyr" for p in rep["near_duplicates"])
+
+    def test_lint_single_use(self, test_db: BotTalkDB):
+        self._raw_insert(test_db, "A", ["only-once"])
+        self._raw_insert(test_db, "B", ["only-once", "twice"])
+        rep = test_db.lint_tags()
+        assert any(t["tag"] == "twice" for t in rep["single_use_tags"])
+        assert all(t["tag"] != "only-once" for t in rep["single_use_tags"])
+
+
 class TestUpdatePost:
     """Updating posts with append-only history."""
 

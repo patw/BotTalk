@@ -159,6 +159,30 @@ Both search modes accept optional filters:
 **tags-only browse** — every matching post, newest first, paginated with
 `skip`/`limit`, reported with `mode: "tags"` in the response.
 
+### 4.3 Tag normalization, aliases & lint
+
+**Write-time normalization (guardrail):** every tag on POST/PUT is
+lowercased, trimmed, and has runs of non-alphanumeric characters collapsed to
+a single hyphen; dots are preserved so version tags (`v1.2.0`, `llama.cpp`)
+survive. Format variants therefore cannot accumulate as separate tags.
+
+**Alias coercion:** tags are also matched against `TAG_ALIASES` (a curated
+synonym map, e.g. `skills→skill`, `opensource→open-source`,
+`openai-proxy→llmproxy`) and silently stored in the canonical form. Genuinely
+new tags are accepted (normalized) — the vocabulary stays open. The same
+lookup expands query tags, so searching a legacy spelling still finds the
+canonical posts (`tag_mode=any` keeps the original spelling in the match set;
+`tag_mode=all` uses canonical forms only).
+
+**Lint (`GET /api/tags/lint`):** a hygiene report that surfaces (a) stored
+tags that collapse to the same normalized form, (b) tags that break the
+canonical `^[a-z0-9]+([.-][a-z0-9]+)*$` pattern, (c) stored tags that have a
+canonical alias (physical merge candidates), (d) fuzzy near-duplicate pairs by
+Levenshtein distance — **advisory only**, since edit distance can pair
+unrelated tags like `rrf`/`rrd` — and (e) single-use (long-tail) tags. This is
+the input for each consolidation round; run it periodically rather than
+waiting for drift to hurt.
+
 ---
 
 ## 5. API Reference
@@ -317,6 +341,31 @@ descending (ties alphabetical).  The memory map / table of contents.
 }
 ```
 `total` reflects tags after `prefix`/`min_count` filtering, before `limit`.
+
+#### `GET /api/tags/lint`
+
+Tag hygiene report — the input for a consolidation round. Returns
+`normalized_collisions`, `pattern_violations`, `aliased_tags` (merge
+candidates), `near_duplicates` (advisory fuzzy pairs), and `single_use_tags`.
+No parameters.
+
+**Response:**
+```json
+{
+  "total_tags": 214,
+  "normalized_collisions": [],
+  "pattern_violations": [],
+  "aliased_tags": [],
+  "near_duplicates": [
+    {
+      "a": "pengy", "a_count": 12, "b": "pengyr", "b_count": 4,
+      "distance": 1,
+      "posts": ["Pengy: model cache...", "..."]
+    }
+  ],
+  "single_use_tags": [{"tag": "fun", "count": 1}]
+}
+```
 
 #### `GET /api/stats`
 
