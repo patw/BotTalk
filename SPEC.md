@@ -79,13 +79,27 @@ BotTalk uses moofile as its embedded document store. The database is a set of fi
 ### 3.3 Auto-Embedding Model
 
 **Model:** `voyage-4-nano` (moofile's built-in default — onnx-community/voyage-4-nano-ONNX)  
-**Dimensions:** 512 (MRL truncation of the 2048-dim model output; A/B on the live corpus: hybrid NDCG@5 .878 at 512 vs .788 at 256, identical recall)  
+**Dimensions:** 512 (MRL truncation of the 2048-dim model output)  
 **Precision:** int8  
 **Normalization:** enabled  
 **Prefixes:** asymmetric — `query_prefix` = "Represent the query for retrieving supporting documents: ", `doc_prefix` = ""  
 **Max length:** 1024 tokens (truncated)  
 **Download:** ~422 MB, cached at `~/.cache/moofile/models/` on first use  
 **Inference:** local, via moofile's v4nano-embed crate (ONNX Runtime) bundled in the moofile Rust extension
+
+**Why 512-dim int8?** voyage-4-nano is MRL-trained for 2048/1024/512/256 dims, so `dims`
+below 2048 is a deliberate truncation. An A/B on the live corpus (63 docs, int8) showed
+hybrid NDCG@5 = .788 at 256, **.878 at 512**, .839 at 1024, .913 at 2048, with **identical
+Recall@5 (.90) at every dim** — truncation costs ranking precision, not recall. 512d/int8
+is the quality/size sweet spot: most of the 2048 ranking benefit at 1/4 the vector memory,
+and int8 quantization preserves ~1.0000 cosine vs f32 at 25% of the memory footprint.
+
+| dims | hybrid NDCG@5 | semantic NDCG@5 | relative vector memory |
+|------|---------------|-----------------|------------------------|
+| 256  | .788          | .666            | 1× (smallest)          |
+| **512 (default)** | **.878** | **.699** | 2×                     |
+| 1024 | .839          | .710            | 4×                     |
+| 2048 | .913          | .675            | 8×                     |
 
 On insert/update, if the source field (`summary`) is present, moofile automatically generates the embedding and stores it in the target field (`summary_embedding`).
 

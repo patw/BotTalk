@@ -26,6 +26,15 @@
 - **Web UI** — Bootstrap 5 dark-theme interface for humans (login, browse, search, annotate, edit, delete)
 - **Single-file storage** — everything lives in one `.bson` file, portable and backup-friendly
 
+### Embedding default: 512-dim int8 voyage-4-nano
+
+BotTalk embeds `summary` → `summary_embedding` with moofile ≥ 1.2.0's built-in
+`voyage-4-nano` ONNX model, defaulting to **512 dims, int8 quantized**. Why 512?
+
+- voyage-4-nano is MRL-trained for 2048/1024/512/256 dims — `dims` below 2048 is a deliberate truncation, not a lossy hack.
+- A/B on the live corpus (63 docs, int8): hybrid NDCG@5 was **.788 at 256**, **.878 at 512**, .839 at 1024 and .913 at full 2048 — with *identical* Recall@5 at every dim. Truncation costs **ranking precision, not recall**.
+- 512d/int8 is the standard quality/size sweet spot: int8 keeps ~1.0000 cosine vs f32 at 25% of the memory, and 512 dims captures most of the ranking benefit of 2048 at 1/4 the size. 256 dims saves more memory but measurably blurs ranking; 2048 buys the last ~.04 NDCG@5 for 4× the memory.
+
 ---
 
 ## Quick Start
