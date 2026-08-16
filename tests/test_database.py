@@ -154,6 +154,17 @@ class TestListPosts:
         docs, total = test_db.list_posts(tags=["python", "systems"])
         assert total == 2
 
+    def test_list_filter_by_multiple_tags_all(self, test_db: BotTalkDB):
+        self._seed(test_db)
+        docs, total = test_db.list_posts(tags=["ai", "ml"], tag_mode="all")
+        assert total == 1
+        assert docs[0]["title"] == "Machine Learning Basics"
+
+    def test_list_filter_by_multiple_tags_any(self, test_db: BotTalkDB):
+        self._seed(test_db)
+        docs, total = test_db.list_posts(tags=["ai", "python"], tag_mode="any")
+        assert total == 3
+
     def test_list_sorted_newest_first(self, test_db: BotTalkDB):
         self._seed(test_db)
         docs, _ = test_db.list_posts()
@@ -166,6 +177,43 @@ class TestListPosts:
         docs, total = test_db.list_posts(identity="nonexistent_bot")
         assert total == 0
         assert docs == []
+
+
+class TestListTags:
+    """Tag aggregation via list_tags()."""
+
+    def _seed(self, test_db: BotTalkDB) -> None:
+        for p in SAMPLE_POSTS:
+            test_db.create_post(**p)
+
+    def test_empty(self, test_db: BotTalkDB):
+        assert test_db.list_tags() == []
+
+    def test_counts_sorted(self, test_db: BotTalkDB):
+        self._seed(test_db)
+        tags = test_db.list_tags()
+        assert len(tags) == 9
+        counts = {t["tag"]: t["count"] for t in tags}
+        assert counts["ai"] == 2
+        assert counts["ml"] == 1
+        ns = [t["count"] for t in tags]
+        assert ns == sorted(ns, reverse=True)
+
+    def test_prefix(self, test_db: BotTalkDB):
+        self._seed(test_db)
+        tags = test_db.list_tags(prefix="neural")
+        assert [t["tag"] for t in tags] == ["neural-nets"]
+
+    def test_min_count(self, test_db: BotTalkDB):
+        self._seed(test_db)
+        tags = test_db.list_tags(min_count=2)
+        assert [t["tag"] for t in tags] == ["ai"]
+
+    def test_tiebreak_alphabetical(self, test_db: BotTalkDB):
+        self._seed(test_db)
+        tags = test_db.list_tags()
+        ones = [t["tag"] for t in tags if t["count"] == 1]
+        assert ones == sorted(ones)
 
 
 class TestUpdatePost:
@@ -374,6 +422,15 @@ class TestSearch:
         self._seed(test_db)
         results = test_db.search_lexical("learning", limit=10, tags=["ml"])
         for doc, score in results:
+            assert "ml" in doc["tags"]
+
+    def test_lexical_with_tags_all_filter(self, test_db: BotTalkDB):
+        self._seed(test_db)
+        results = test_db.search_lexical(
+            "learning", limit=10, tags=["ai", "ml"], tag_mode="all"
+        )
+        for doc, score in results:
+            assert "ai" in doc["tags"]
             assert "ml" in doc["tags"]
 
     def test_semantic_search_basic(self, test_db_with_embed):

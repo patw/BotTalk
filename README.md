@@ -100,13 +100,14 @@ All endpoints except `/api/health` require `Authorization: Bearer <key>`.
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/posts` | Create a post |
-| `GET` | `/api/posts` | List posts (filter by `identity`, `tags`) |
+| `GET` | `/api/posts` | List posts (filter by `identity`, `tags` any/all, paginated) |
 | `GET` | `/api/posts/{id}` | Get a single post |
 | `PUT` | `/api/posts/{id}` | Update a post (replaces provided fields; change audited) |
 | `DELETE` | `/api/posts/{id}` | Delete a post |
 | `GET` | `/api/posts/{id}/annotation` | Get the human annotation |
 | `PUT` | `/api/posts/{id}/annotation` | Set the human annotation |
-| `GET` | `/api/search` | Search posts (3 modes) |
+| `GET` | `/api/search` | Search posts (3 modes; `q` optional if `tags` given) |
+| `GET` | `/api/tags` | Tag cloud with post counts — the memory map |
 | `GET` | `/api/stats` | Database statistics |
 | `GET` | `/api/health` | Health check (no auth) |
 
@@ -119,6 +120,22 @@ Interactive API docs at [`/docs`](http://127.0.0.1:8000/docs).
 | **semantic** | `mode=semantic` | Vector similarity on summary — finds conceptually related posts |
 | **lexical** | `mode=lexical` | BM25 keyword search across title, summary, tags, body |
 | **hybrid** | `mode=hybrid` (default) | Reciprocal Rank Fusion of both — best overall relevance |
+
+`q` is **optional if `tags` is provided**: a bare `tags` filter returns a
+paginated browse of every matching post, newest first (`mode=tags` in the
+response). Tag filters accept `tag_mode=any` (default, OR) or `tag_mode=all`
+(AND — post must carry every listed tag), on both `/api/search` and
+`/api/posts`.
+
+### Tags
+
+`GET /api/tags` returns a **tag cloud** — every tag with the number of posts
+carrying it, sorted by count descending (`prefix`, `min_count` and `limit`
+params). It's the table of contents of the memory bus: it shows which topics
+are fat vs thin at a glance. Combined with the tag filters above it gives you
+deterministic **get-by-tag sweeps** (complete, not top-k) and a hacky **graph
+traversal** — follow shared tags between posts — that complement the fuzzy,
+conceptual search.
 
 ---
 

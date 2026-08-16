@@ -222,12 +222,87 @@ class TestListPosts:
         resp = client.get("/api/posts?identity=nobody", headers=self.AUTH)
         assert resp.json()["total"] == 0
 
+    def test_list_filter_tags_all(self, client: TestClient):
+        """tag_mode=all requires every listed tag to be present."""
+        self._seed(client)
+        resp = client.get("/api/posts?tags=ai,python&tag_mode=all", headers=self.AUTH)
+        assert resp.json()["total"] == 0  # no post has both ai and python
+
+        resp = client.get("/api/posts?tags=ai,ml&tag_mode=all", headers=self.AUTH)
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["posts"][0]["title"] == "Machine Learning Basics"
+
+    def test_list_filter_tags_any(self, client: TestClient):
+        """tag_mode=any (default) matches posts with any listed tag."""
+        self._seed(client)
+        resp = client.get("/api/posts?tags=ai,python", headers=self.AUTH)
+        assert resp.json()["total"] == 3  # ML Basics, Neural Networks, Python Tips
+
+    def test_list_invalid_tag_mode(self, client: TestClient):
+        self._seed(client)
+        resp = client.get("/api/posts?tags=ai&tag_mode=bad", headers=self.AUTH)
+        assert resp.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
     def test_list_newest_first(self, client: TestClient):
         self._seed(client)
         resp = client.get("/api/posts", headers=self.AUTH)
         posts = resp.json()["posts"]
         timestamps = [p["created_at"] for p in posts]
         assert timestamps == sorted(timestamps, reverse=True)
+
+
+class TestTags:
+    """GET /api/tags — tag cloud with counts."""
+
+    AUTH = {"Authorization": "Bearer test-api-key-12345"}
+
+    def _seed(self, client: TestClient):
+        for p in SAMPLE_POSTS:
+            client.post("/api/posts", json=p, headers=self.AUTH)
+
+    def test_tags_requires_auth(self, client: TestClient):
+        resp = client.get("/api/tags")
+        assert resp.status_code == status.HTTP_401_UNAUTHORIZED
+
+    def test_tags_empty(self, client: TestClient):
+        resp = client.get("/api/tags", headers=self.AUTH)
+        assert resp.status_code == status.HTTP_200_OK
+        data = resp.json()
+        assert data["total"] == 0
+        assert data["tags"] == []
+
+    def test_tags_counts_sorted(self, client: TestClient):
+        self._seed(client)
+        resp = client.get("/api/tags", headers=self.AUTH)
+        data = resp.json()
+        assert data["total"] == 9
+        counts = {t["tag"]: t["count"] for t in data["tags"]}
+        assert counts["ai"] == 2
+        assert counts["ml"] == 1
+        ns = [t["count"] for t in data["tags"]]
+        assert ns == sorted(ns, reverse=True)
+
+    def test_tags_prefix(self, client: TestClient):
+        self._seed(client)
+        resp = client.get("/api/tags?prefix=neural", headers=self.AUTH)
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["tags"][0]["tag"] == "neural-nets"
+
+    def test_tags_min_count(self, client: TestClient):
+        self._seed(client)
+        resp = client.get("/api/tags?min_count=2", headers=self.AUTH)
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["tags"][0]["tag"] == "ai"
+
+    def test_tags_limit(self, client: TestClient):
+        self._seed(client)
+        resp = client.get("/api/tags?limit=2", headers=self.AUTH)
+        data = resp.json()
+        assert len(data["tags"]) == 2
+        assert data["total"] == 9  # total unaffected by limit
 
 
 class TestUpdatePost:
@@ -472,6 +547,38 @@ class TestSearch:
     def test_search_requires_query(self, client: TestClient):
         resp = client.get("/api/search", headers=self.AUTH)
         assert resp.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
+    def test_search_tags_only_browse(self, client: TestClient):
+        """No q + tags → paginated browse of every matching post, newest first."""
+        self._seed(client)
+        resp = client.get("/api/search?tags=ai", headers=self.AUTH)
+        assert resp.status_code == status.HTTP_200_OK
+        data = resp.json()
+        assert data["mode"] == "tags"
+        assert data["total"] == 2
+        titles = {r["post"]["title"] for r in data["results"]}
+        assert titles == {"Machine Learning Basics", "Neural Networks"}
+
+    def test_search_tags_only_paging(self, client: TestClient):
+        self._seed(client)
+        r1 = client.get("/api/search?tags=ai&limit=1", headers=self.AUTH)
+        r2 = client.get("/api/search?tags=ai&limit=1&skip=1", headers=self.AUTH)
+        d1, d2 = r1.json(), r2.json()
+        assert d1["total"] == 2 and len(d1["results"]) == 1
+        assert d2["total"] == 2 and len(d2["results"]) == 1
+        assert d1["results"][0]["post"]["id"] != d2["results"][0]["post"]["id"]
+
+    def test_search_tag_mode_all(self, client: TestClient):
+        """tag_mode=all restricts relevance search to posts with every tag."""
+        self._seed(client)
+        resp = client.get(
+            "/api/search?q=learning&mode=lexical&tags=ai,ml&tag_mode=all",
+            headers=self.AUTH,
+        )
+        assert resp.status_code == status.HTTP_200_OK
+        for r in resp.json()["results"]:
+            assert "ai" in r["post"]["tags"]
+            assert "ml" in r["post"]["tags"]
 
     def test_search_invalid_mode(self, client: TestClient):
         resp = client.get("/api/search?q=test&mode=invalid", headers=self.AUTH)

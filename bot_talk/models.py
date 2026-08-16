@@ -172,6 +172,21 @@ class PostListResponse(BaseModel):
     limit: int = Field(20, description="Limit used")
 
 
+class TagCount(BaseModel):
+    """A single tag with the number of posts carrying it."""
+    tag: str = Field(..., description="Tag name")
+    count: int = Field(..., ge=1, description="Number of posts carrying this tag")
+
+
+class TagListResponse(BaseModel):
+    """A tag cloud: tags with counts, sorted by frequency."""
+    tags: list[TagCount] = Field(..., description="Tags sorted by count desc")
+    total: int = Field(
+        ..., description="Tags after prefix/min_count filters, before limit"
+    )
+    min_count: int = Field(1, description="Minimum count filter used")
+
+
 class StatusResponse(BaseModel):
     """Health / status response."""
     status: str = "ok"

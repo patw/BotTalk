@@ -12,6 +12,7 @@ The collection uses:
 from __future__ import annotations
 
 import os
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -159,17 +160,15 @@ class BotTalkDB:
         limit: int = 20,
         identity: str | None = None,
         tags: list[str] | None = None,
+        tag_mode: str = "any",
     ) -> tuple[list[dict], int]:
         """List posts with optional filtering, sorted by created_at desc.
 
+        ``tag_mode`` is ``"any"`` (posts carrying ANY of ``tags``) or
+        ``"all"`` (posts carrying EVERY one of ``tags``).
         Returns (documents, total_count).
         """
-        # Build filter
-        filter_dict: dict = {}
-        if identity:
-            filter_dict["identity"] = identity
-        if tags:
-            filter_dict["tags"] = {"$elemMatch": {"$in": tags}}
+        filter_dict = self._build_search_filter(identity, tags, tag_mode)
 
         # Count matching documents
         total = self.db.count(filter_dict) if filter_dict else self.db.count()
@@ -269,13 +268,14 @@ class BotTalkDB:
         limit: int = DEFAULT_SEARCH_LIMIT,
         identity: str | None = None,
         tags: list[str] | None = None,
+        tag_mode: str = "any",
     ) -> list[tuple[dict, float]]:
         """Semantic (vector) search on the summary field.
 
         The query text is embedded automatically using the configured GGUF model.
         Returns ``[(doc, score), ...]`` sorted by relevance (descending).
         """
-        pre_filter = self._build_search_filter(identity, tags)
+        pre_filter = self._build_search_filter(identity, tags, tag_mode)
         return (
             self.db.find(pre_filter)
             .semantic("summary", query, limit=limit)
@@ -288,6 +288,7 @@ class BotTalkDB:
         limit: int = DEFAULT_SEARCH_LIMIT,
         identity: str | None = None,
         tags: list[str] | None = None,
+        tag_mode: str = "any",
     ) -> list[tuple[dict, float]]:
         """Lexical (BM25) search across indexed text fields.
 
@@ -295,7 +296,7 @@ class BotTalkDB:
         Returns ``[(doc, score), ...]`` sorted by relevance (descending).
         Results are combined and deduplicated across fields.
         """
-        pre_filter = self._build_search_filter(identity, tags)
+        pre_filter = self._build_search_filter(identity, tags, tag_mode)
 
         # Search across all text-indexed fields
         all_results: dict[str, tuple[dict, float]] = {}
@@ -329,13 +330,14 @@ class BotTalkDB:
         limit: int = DEFAULT_SEARCH_LIMIT,
         identity: str | None = None,
         tags: list[str] | None = None,
+        tag_mode: str = "any",
     ) -> list[tuple[dict, float]]:
         """Hybrid search: BM25 + semantic vector search fused via RRF.
 
         The semantic leg uses auto-embedding on the query text.
         Both result sets are combined using Reciprocal Rank Fusion.
         """
-        pre_filter = self._build_search_filter(identity, tags)
+        pre_filter = self._build_search_filter(identity, tags, tag_mode)
 
         # Get both result sets
         semantic_results = (
@@ -391,6 +393,37 @@ class BotTalkDB:
     # Stats
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Tags
+    # ------------------------------------------------------------------
+
+    def list_tags(
+        self,
+        prefix: str | None = None,
+        min_count: int = 1,
+    ) -> list[dict]:
+        """Aggregate tag frequencies across all posts.
+
+        Returns a list of ``{"tag": str, "count": int}`` sorted by count
+        descending (ties broken alphabetically).  Only tags used on at least
+        ``min_count`` posts are included, optionally restricted to tags that
+        start with ``prefix``.
+        """
+        counts: Counter[str] = Counter()
+        for doc in self.db.find({}).to_list():
+            for tag in doc.get("tags") or []:
+                counts[tag] += 1
+
+        tags = [
+            {"tag": tag, "count": n}
+            for tag, n in counts.items()
+            if n >= min_count and (prefix is None or tag.startswith(prefix))
+        ]
+        tags.sort(key=lambda t: (-t["count"], t["tag"]))
+        return tags
+
+
+
     def stats(self) -> dict:
         """Get database statistics."""
         return self.db.stats()
@@ -407,13 +440,24 @@ class BotTalkDB:
     def _build_search_filter(
         identity: str | None = None,
         tags: list[str] | None = None,
+        tag_mode: str = "any",
     ) -> dict:
-        """Build a moofile filter dict for search pre-filtering."""
+        """Build a moofile filter dict for search pre-filtering.
+
+        ``tag_mode``:
+          - ``"any"`` — match posts carrying ANY of the given tags (OR)
+          - ``"all"`` — match posts carrying EVERY given tag (AND)
+        """
         filter_dict: dict = {}
         if identity:
             filter_dict["identity"] = identity
         if tags:
-            filter_dict["tags"] = {"$elemMatch": {"$in": tags}}
+            if tag_mode == "all":
+                filter_dict["$and"] = [
+                    {"tags": {"$elemMatch": {"$eq": tag}}} for tag in tags
+                ]
+            else:
+                filter_dict["tags"] = {"$elemMatch": {"$in": tags}}
         return filter_dict
 
 

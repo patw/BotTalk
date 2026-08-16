@@ -31,6 +31,7 @@ from .models import (
     PostSearchResult,
     PostUpdate,
     StatusResponse,
+    TagListResponse,
     UpdateRecord,
     doc_to_response,
 )
@@ -91,16 +92,22 @@ async def list_posts(
     tags: Optional[str] = Query(
         None, description="Comma-separated tags to filter by"
     ),
+    tag_mode: str = Query(
+        "any",
+        pattern="^(any|all)$",
+        description="any = posts with any listed tag, all = posts with every listed tag",
+    ),
     db: BotTalkDB = Depends(_get_db),
     _=Depends(verify_api_key),
 ):
     """List posts sorted by creation time (newest first).
 
-    Optional filters: ``identity`` (exact match) and ``tags`` (any match).
+    Optional filters: ``identity`` (exact match) and ``tags`` (with
+    ``tag_mode`` any/all semantics).
     """
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
     docs, total = db.list_posts(
-        skip=skip, limit=limit, identity=identity, tags=tag_list
+        skip=skip, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode
     )
     return PostListResponse(
         posts=[doc_to_response(d) for d in docs],
@@ -234,18 +241,30 @@ async def set_annotation(
     summary="Rich search across bot posts",
 )
 async def search_posts(
-    q: str = Query(..., min_length=1, description="Search query text"),
+    q: Optional[str] = Query(
+        None,
+        min_length=1,
+        description="Search query text — optional if 'tags' is given (tags-only browse)",
+    ),
     mode: str = Query(
         "hybrid",
         pattern="^(semantic|lexical|hybrid)$",
         description="Search mode: semantic (vector), lexical (BM25), or hybrid (RRF fusion)",
     ),
     limit: int = Query(20, ge=1, le=100, description="Max results"),
+    skip: int = Query(
+        0, ge=0, description="Offset for tags-only browse pagination"
+    ),
     identity: Optional[str] = Query(
         None, description="Narrow search to a specific bot identity"
     ),
     tags: Optional[str] = Query(
         None, description="Comma-separated tags to filter by"
+    ),
+    tag_mode: str = Query(
+        "any",
+        pattern="^(any|all)$",
+        description="any = match posts carrying any listed tag, all = every listed tag",
     ),
     db: BotTalkDB = Depends(_get_db),
     _=Depends(verify_api_key),
@@ -259,16 +278,53 @@ async def search_posts(
     - **hybrid** (default): Reciprocal Rank Fusion combining semantic and
       lexical results.  Best overall relevance.
 
-    Optional filters: ``identity`` (exact match) and ``tags`` (any match).
+    Optional filters: ``identity`` (exact match) and ``tags`` (with
+    ``tag_mode`` any/all semantics).  Either ``q`` or ``tags`` is required:
+
+    - ``q`` + ``tags``: relevance search restricted to matching posts.
+    - ``tags`` alone: a paginated **tags-only browse** of every matching
+      post, newest first (``mode`` in the response is ``"tags"``).
     """
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
 
+    if not q and not tag_list:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Either 'q' or 'tags' is required",
+        )
+
+    # Tags-only browse: every post carrying the tags, newest first, paged.
+    if q is None:
+        docs, total = db.list_posts(
+            skip=skip, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode
+        )
+        search_results = [
+            PostSearchResult(
+                post=doc_to_response(doc),
+                score=1.0,
+                rank=skip + idx + 1,
+            )
+            for idx, doc in enumerate(docs)
+        ]
+        return PostSearchResponse(
+            results=search_results,
+            total=total,
+            mode="tags",
+            query="",
+        )
+
     if mode == "semantic":
-        results = db.search_semantic(q, limit=limit, identity=identity, tags=tag_list)
+        results = db.search_semantic(
+            q, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode
+        )
     elif mode == "lexical":
-        results = db.search_lexical(q, limit=limit, identity=identity, tags=tag_list)
+        results = db.search_lexical(
+            q, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode
+        )
     else:
-        results = db.search_hybrid(q, limit=limit, identity=identity, tags=tag_list)
+        results = db.search_hybrid(
+            q, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode
+        )
 
     search_results = [
         PostSearchResult(
@@ -288,6 +344,42 @@ async def search_posts(
 
 
 # ======================== Stats & Health ========================
+
+# ======================== Tags ========================
+
+
+@router.get(
+    "/tags",
+    response_model=TagListResponse,
+    summary="List all tags with post counts",
+)
+async def list_tags(
+    prefix: Optional[str] = Query(
+        None, description="Only include tags starting with this prefix"
+    ),
+    min_count: int = Query(
+        1, ge=1, description="Only include tags used on at least this many posts"
+    ),
+    limit: int = Query(50, ge=1, le=500, description="Max tags to return"),
+    db: BotTalkDB = Depends(_get_db),
+    _=Depends(verify_api_key),
+):
+    """Return a tag cloud: every tag with the number of posts carrying it.
+
+    Sorted by count descending (ties broken alphabetically).  ``total`` in
+    the response reflects the number of tags after ``prefix``/``min_count``
+    filtering but before ``limit`` is applied, so clients can detect
+    truncation.
+    """
+    all_tags = db.list_tags(prefix=prefix, min_count=min_count)
+    return TagListResponse(
+        tags=all_tags[:limit],
+        total=len(all_tags),
+        min_count=min_count,
+    )
+
+
+
 
 
 @router.get(
