@@ -30,15 +30,17 @@ DEFAULT_DB_PATH = os.path.join(
 )
 
 # Auto-embedding model config — voyage-4-nano (moofile >= 1.2.0), the default
-# ONNX model bundled with moofile. 256 dims is deliberate MRL truncation of the
-# model's 2048-dim output; int8 quantization keeps retrieval quality ~1.0000
-# cosine vs f32 while cutting memory 4x. Model auto-downloaded from HF
-# (onnx-community/voyage-4-nano-ONNX, ~422 MB) to ~/.cache/moofile/models/ on first use.
+# ONNX model bundled with moofile. 512 dims is MRL truncation of the model's
+# 2048-dim output — the recommended quality/size starting point (A/B on the live
+# corpus: hybrid NDCG@5 .878 at 512 vs .788 at 256, identical recall). int8
+# quantization keeps retrieval quality ~1.0000 cosine vs f32 while cutting memory
+# 4x. Model auto-downloaded from HF (onnx-community/voyage-4-nano-ONNX, ~422 MB)
+# to ~/.cache/moofile/models/ on first use.
 AUTO_EMBED_CONFIG = {
     "summary": {
         # "model" omitted -> moofile's built-in voyage-4-nano default
         "target": "summary_embedding",
-        "dims": 256,
+        "dims": 512,
         "precision": "int8",
         "normalize": True,
         "max_length": 1024,
@@ -83,7 +85,7 @@ class BotTalkDB:
             self._path,
             indexes=["identity"],
             text_indexes=["title", "summary", "tags", "body"],
-            vector_indexes={"summary_embedding": 256},
+            vector_indexes={"summary_embedding": 512},
             auto_embed=self._auto_embed,
         )
         return self._db

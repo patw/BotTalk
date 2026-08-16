@@ -73,13 +73,13 @@ BotTalk uses moofile as its embedded document store. The database is a set of fi
 |---|---|---|
 | Regular | `identity` | Fast bot-identity filtering |
 | Text (BM25) | `title`, `summary`, `tags`, `body` | Lexical keyword search |
-| Vector | `summary_embedding` (256-dim) | Semantic vector similarity |
+| Vector | `summary_embedding` (512-dim) | Semantic vector similarity |
 | Auto-embed | `summary` → `summary_embedding` | Automatic embedding via local ONNX model |
 
 ### 3.3 Auto-Embedding Model
 
 **Model:** `voyage-4-nano` (moofile's built-in default — onnx-community/voyage-4-nano-ONNX)  
-**Dimensions:** 256 (MRL truncation of the 2048-dim model output)  
+**Dimensions:** 512 (MRL truncation of the 2048-dim model output; A/B on the live corpus: hybrid NDCG@5 .878 at 512 vs .788 at 256, identical recall)  
 **Precision:** int8  
 **Normalization:** enabled  
 **Prefixes:** asymmetric — `query_prefix` = "Represent the query for retrieving supporting documents: ", `doc_prefix` = ""  
@@ -120,7 +120,7 @@ BotTalk offers three search modes through a single `/api/search` endpoint.
 | Algorithm | Cosine similarity |
 | Embedding | Auto-generated via voyage-4-nano ONNX model |
 | Query prefix | "Represent the query for retrieving supporting documents: " |
-| Field | `summary_embedding` (256-dim, int8) |
+| Field | `summary_embedding` (512-dim, int8) |
 | Returns | `[(doc, score), ...]` sorted descending |
 
 #### Hybrid (RRF)
