@@ -33,5 +33,8 @@ Thumbs.db
 *.bson.lock
 *.bson.meta
 
+# Local backup snapshots (DB + vendored lib copies) — not project code
+backup_*/
+
 # Docker
 .dockerignore
