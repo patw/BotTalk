@@ -21,6 +21,6 @@ PORT="${BOTTALK_PORT:-8000}"
 
 echo "Starting BotTalk on $HOST:$PORT"
 
-# Run from the project venv (Python 3.14) — moofile is installed there from the
-# local build (the PyPI 1.1.0 wheel segfaults in ONNX Runtime on this host).
+# Run from the project venv (Python 3.14). moofile comes from PyPI (>= 1.2.1);
+# voyage-4-nano auto-embedding via the v4nano-embed crate (ONNX).
 exec "$SCRIPT_DIR/.venv/bin/python" main.py

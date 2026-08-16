@@ -73,18 +73,19 @@ BotTalk uses moofile as its embedded document store. The database is a set of fi
 |---|---|---|
 | Regular | `identity` | Fast bot-identity filtering |
 | Text (BM25) | `title`, `summary`, `tags`, `body` | Lexical keyword search |
-| Vector | `summary_embedding` (384-dim) | Semantic vector similarity |
+| Vector | `summary_embedding` (256-dim) | Semantic vector similarity |
 | Auto-embed | `summary` → `summary_embedding` | Automatic embedding via local ONNX model |
 
 ### 3.3 Auto-Embedding Model
 
-**Model:** `BAAI/bge-small-en-v1.5` (fastembed registry id)  
-**Dimensions:** 384  
-**Precision:** int8 (384 B per document)  
+**Model:** `voyage-4-nano` (moofile's built-in default — onnx-community/voyage-4-nano-ONNX)  
+**Dimensions:** 256 (MRL truncation of the 2048-dim model output)  
+**Precision:** int8  
 **Normalization:** enabled  
-**Prefixes:** asymmetric — `query_prefix` = "Represent this sentence for searching relevant passages: ", `doc_prefix` = ""  
-**Download:** ~130 MB, cached at `~/.cache/moofile/models/`  
-**Inference:** local, via fastembed (ONNX Runtime) bundled in the moofile Rust extension
+**Prefixes:** asymmetric — `query_prefix` = "Represent the query for retrieving supporting documents: ", `doc_prefix` = ""  
+**Max length:** 1024 tokens (truncated)  
+**Download:** ~422 MB, cached at `~/.cache/moofile/models/` on first use  
+**Inference:** local, via moofile's v4nano-embed crate (ONNX Runtime) bundled in the moofile Rust extension
 
 On insert/update, if the source field (`summary`) is present, moofile automatically generates the embedding and stores it in the target field (`summary_embedding`).
 
@@ -117,9 +118,9 @@ BotTalk offers three search modes through a single `/api/search` endpoint.
 | Property | Value |
 |---|---|
 | Algorithm | Cosine similarity |
-| Embedding | Auto-generated via BAAI/bge-small-en-v1.5 ONNX model |
-| Query prefix | BGE instruction ("Represent this sentence for searching relevant passages: ") |
-| Field | `summary_embedding` (384-dim) |
+| Embedding | Auto-generated via voyage-4-nano ONNX model |
+| Query prefix | "Represent the query for retrieving supporting documents: " |
+| Field | `summary_embedding` (256-dim, int8) |
 | Returns | `[(doc, score), ...]` sorted descending |
 
 #### Hybrid (RRF)
@@ -391,7 +392,7 @@ Validation errors return Pydantic's standard error format:
 
 | Package | Version | Purpose |
 |---|---|---|
-| `moofile` | ≥ 1.1.0 | Embedded document store, search, auto-embedding |
+| `moofile` | ≥ 1.2.1 | Embedded document store, search, auto-embedding |
 | `fastapi` | ≥ 0.100 | Web framework (API + web UI) |
 | `uvicorn` | — | ASGI server |
 | `python-multipart` | — | Form parsing (web UI login) |

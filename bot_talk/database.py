@@ -6,7 +6,7 @@ The collection uses:
   - Regular indexes on ``identity`` and ``tags`` for fast filtering.
   - Text indexes (BM25) on ``title``, ``summary``, ``tags``, ``body``.
   - Vector index on ``summary_embedding`` with auto-embedding from the
-    ``summary`` field via a local ONNX embedding model (fastembed).
+    ``summary`` field via the local voyage-4-nano ONNX model (moofile >= 1.2.0).
 """
 
 from __future__ import annotations
@@ -29,17 +29,21 @@ DEFAULT_DB_PATH = os.path.join(
     "bottalk.bson",
 )
 
-# Auto-embedding model config — local ONNX model via fastembed (moofile >= 1.1.0)
-# BAAI/bge-small-en-v1.5 (384-dim) — downloaded to ~/.cache/moofile/models/ on first use
+# Auto-embedding model config — voyage-4-nano (moofile >= 1.2.0), the default
+# ONNX model bundled with moofile. 256 dims is deliberate MRL truncation of the
+# model's 2048-dim output; int8 quantization keeps retrieval quality ~1.0000
+# cosine vs f32 while cutting memory 4x. Model auto-downloaded from HF
+# (onnx-community/voyage-4-nano-ONNX, ~422 MB) to ~/.cache/moofile/models/ on first use.
 AUTO_EMBED_CONFIG = {
     "summary": {
-        "model": "BAAI/bge-small-en-v1.5",
+        # "model" omitted -> moofile's built-in voyage-4-nano default
         "target": "summary_embedding",
-        "dims": 384,
+        "dims": 256,
         "precision": "int8",
         "normalize": True,
-        # BGE is asymmetric: queries carry an instruction prefix, documents do not.
-        "query_prefix": "Represent this sentence for searching relevant passages: ",
+        "max_length": 1024,
+        # voyage-4-nano is asymmetric: queries carry an instruction prefix, docs do not.
+        "query_prefix": "Represent the query for retrieving supporting documents: ",
         "doc_prefix": "",
     }
 }
@@ -79,10 +83,24 @@ class BotTalkDB:
             self._path,
             indexes=["identity"],
             text_indexes=["title", "summary", "tags", "body"],
-            vector_indexes={"summary_embedding": 384},
+            vector_indexes={"summary_embedding": 256},
             auto_embed=self._auto_embed,
         )
         return self._db
+
+    def reembed(self, source_field: str = "summary") -> int:
+        """Re-embed every document carrying ``source_field`` at the new width.
+
+        Thin wrapper over moofile's ``reembed()`` — the recovery path after the
+        embedding model or dims change.  Rewrites every stored vector at the
+        configured width, retargets the vector index and its ``.meta`` entry,
+        and clears the disabled-vector-index flag raised at open on a width
+        mismatch.  Returns the number of documents rewritten.
+
+        Not implicit on open() (it is a whole-collection write), so call it
+        explicitly after a model/dims migration.
+        """
+        return self.db.reembed(source_field)
 
     def close(self) -> None:
         """Close the database."""
