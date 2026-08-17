@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from .database import BotTalkDB, get_db
+from .analytics import get_analytics
 from .models import PostUpdate, doc_to_response
 from .web_auth import SESSION_KEY, is_authenticated, require_web_auth, verify_web_login
 
@@ -67,6 +68,17 @@ async def logout(request: Request):
 
 
 # ======================== Posts List ========================
+
+
+@router.get("/analytics", response_class=HTMLResponse)
+async def analytics_page(request: Request, days: int = Query(30, ge=1, le=3650), _=Depends(require_web_auth)):
+    db: BotTalkDB = get_db()
+    report = get_analytics().report(days, documents=db.db.find({}).to_list())
+    for item in report["top_memories"]:
+        doc = db.get_post(item["post_id"])
+        item["title"] = doc.get("title", item["post_id"]) if doc else item["post_id"]
+    report["total_memories"] = db.count_posts()
+    return templates.TemplateResponse(request, "analytics.html", {"report": report, "days": days, "authenticated": True, "user": request.session.get(SESSION_KEY, "")})
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -144,6 +156,7 @@ async def post_detail(
             status_code=404,
         )
 
+    get_analytics().record("memory_access", post_id=post_id, tags=doc.get("tags"), created_at=doc.get("created_at"))
     post = doc_to_response(doc)
     stats = db.stats()
 

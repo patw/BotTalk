@@ -20,10 +20,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from .auth import verify_api_key
 from .database import BotTalkDB, get_db
+from .analytics import get_analytics
 from .models import (
     HumanAnnotationUpdate,
     PostCreate,
@@ -80,6 +81,7 @@ async def create_post(
         body=body.body,
         identity=body.identity,
     )
+    get_analytics().record("memory_added", post_id=doc.get("_id"), tags=doc.get("tags"), created_at=doc.get("created_at"))
     return doc_to_response(doc)
 
 
@@ -129,6 +131,7 @@ async def get_post(
     post_id: str,
     db: BotTalkDB = Depends(_get_db),
     _=Depends(verify_api_key),
+    x_bottalk_session: Optional[str] = Header(None),
 ):
     """Fetch a post by its document ID."""
     doc = db.get_post(post_id)
@@ -137,6 +140,7 @@ async def get_post(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Post '{post_id}' not found",
         )
+    get_analytics().record("memory_access", post_id=post_id, tags=doc.get("tags"), session_id=x_bottalk_session, created_at=doc.get("created_at"))
     return doc_to_response(doc)
 
 
@@ -271,6 +275,7 @@ async def search_posts(
     ),
     db: BotTalkDB = Depends(_get_db),
     _=Depends(verify_api_key),
+    x_bottalk_session: Optional[str] = Header(None),
 ):
     """Search bot posts using one of three modes:
 
@@ -301,6 +306,7 @@ async def search_posts(
         docs, total = db.list_posts(
             skip=skip, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode
         )
+        get_analytics().record("memory_search", query=q, tags=tag_list, session_id=x_bottalk_session, mode="tags", result_count=total)
         search_results = [
             PostSearchResult(
                 post=doc_to_response(doc),
@@ -328,6 +334,8 @@ async def search_posts(
         results = db.search_hybrid(
             q, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode
         )
+
+    get_analytics().record("memory_search", query=q, tags=tag_list, session_id=x_bottalk_session, mode=mode, result_count=len(results))
 
     search_results = [
         PostSearchResult(
@@ -423,6 +431,21 @@ async def stats(
         documents=s.get("documents", 0),
         database_size_bytes=s.get("file_size_bytes", 0),
     )
+
+
+@router.get("/analytics", summary="Usage analytics")
+async def analytics(
+    days: int = Query(30, ge=1, le=3650),
+    db: BotTalkDB = Depends(_get_db),
+    _=Depends(verify_api_key),
+):
+    documents = db.db.find({}).to_list()
+    report = get_analytics().report(days, documents=documents)
+    for item in report["top_memories"]:
+        doc = db.get_post(item["post_id"])
+        item["title"] = doc.get("title", item["post_id"]) if doc else item["post_id"]
+    report["total_memories"] = db.count_posts()
+    return report
 
 
 @router.get(

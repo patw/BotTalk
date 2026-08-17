@@ -19,9 +19,17 @@
         pre.body-text { white-space: pre-wrap; word-break: break-word; max-height: 60vh; overflow-y: auto; }
         .navbar-brand { font-weight: 700; letter-spacing: -.02em; }
         .navbar-brand small { font-weight: 400; font-size: .7rem; opacity: .6; }
+        .metric-card { min-height: 120px; }
+        [data-bs-theme="light"] body { background: var(--bs-body-bg) !important; }
+        [data-bs-theme="light"] .bg-black { background-color: var(--bs-tertiary-bg) !important; }
+        [data-bs-theme="light"] .text-light { color: var(--bs-body-color) !important; }
     </style>
 </head>
-<body class="bg-dark text-light">
+<body class="bg-body text-body">
+<script>
+(function(){const t=localStorage.getItem('bottalk-theme')||'dark';document.documentElement.setAttribute('data-bs-theme',t);})();
+function toggleTheme(){const d=document.documentElement;const t=d.getAttribute('data-bs-theme')==='dark'?'light':'dark';d.setAttribute('data-bs-theme',t);localStorage.setItem('bottalk-theme',t);}
+</script>
 
     <!-- Nav -->
     <nav class="navbar navbar-expand-lg navbar-dark bg-black border-bottom border-secondary mb-4">
@@ -32,12 +40,13 @@
             </a>
             <div class="d-flex align-items-center gap-3">
                 {% if authenticated %}
-                    <span class="text-secondary small">
-                        <i class="bi bi-person-circle"></i> {{ user }}
-                    </span>
+                    <a href="/analytics" class="btn btn-outline-info btn-sm"><i class="bi bi-graph-up"></i> Analytics</a>
+                    <button class="btn btn-outline-secondary btn-sm" onclick="toggleTheme()" title="Toggle light/dark mode"><i class="bi bi-circle-half"></i></button>
+                    <span class="text-secondary small"><i class="bi bi-person-circle"></i> {{ user }}</span>
                     <a href="/logout" class="btn btn-outline-secondary btn-sm">Logout</a>
                 {% else %}
                     <a href="/login" class="btn btn-outline-info btn-sm">Login</a>
+                    <button class="btn btn-outline-secondary btn-sm" onclick="toggleTheme()" title="Toggle light/dark mode"><i class="bi bi-circle-half"></i></button>
                 {% endif %}
             </div>
         </div>

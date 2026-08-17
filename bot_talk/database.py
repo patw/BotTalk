@@ -175,6 +175,10 @@ class BotTalkDB:
     # CRUD
     # ------------------------------------------------------------------
 
+    def count_posts(self) -> int:
+        """Return the current number of live memories."""
+        return self.db.count()
+
     def create_post(
         self,
         title: str,

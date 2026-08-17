@@ -25,6 +25,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .auth import get_api_key as get_bot_api_key
 from .database import close_db, get_db
+from .analytics import close_analytics
 from .routes import router as api_router
 from .web_auth import get_secret_key
 from .web_routes import router as web_router
@@ -144,6 +145,7 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown
     close_db()
+    close_analytics()
     print("[BotTalk] Database closed.", file=sys.stderr)
 
 
