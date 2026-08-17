@@ -17,8 +17,12 @@
         .pagination { margin-bottom: 0; }
         .update-entry { font-size: .875rem; }
         pre.body-text { white-space: pre-wrap; word-break: break-word; max-height: 60vh; overflow-y: auto; }
-        .navbar-brand { font-weight: 700; letter-spacing: -.02em; }
+        .navbar-brand { font-weight: 700; letter-spacing: -.02em; color: var(--bs-emphasis-color) !important; }
         .navbar-brand small { font-weight: 400; font-size: .7rem; opacity: .6; }
+        .theme-navbar { background-color: var(--bs-tertiary-bg); }
+        .theme-navbar .btn-outline-secondary { color: var(--bs-secondary-color); border-color: var(--bs-border-color); }
+        .theme-navbar .btn-outline-secondary:hover { color: var(--bs-body-color); background-color: var(--bs-secondary-bg); }
+        .theme-navbar .text-secondary { color: var(--bs-secondary-color) !important; }
         .metric-card { min-height: 120px; }
         [data-bs-theme="light"] body { background: var(--bs-body-bg) !important; }
         [data-bs-theme="light"] .bg-black { background-color: var(--bs-tertiary-bg) !important; }
@@ -32,7 +36,7 @@ function toggleTheme(){const d=document.documentElement;const t=d.getAttribute('
 </script>
 
     <!-- Nav -->
-    <nav class="navbar navbar-expand-lg navbar-dark bg-black border-bottom border-secondary mb-4">
+    <nav class="navbar navbar-expand-lg border-bottom mb-4 theme-navbar">
         <div class="container">
             <a class="navbar-brand" href="/">
                 <i class="bi bi-chat-dots-fill text-info me-2"></i>BotTalk

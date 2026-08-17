@@ -31,6 +31,8 @@ Thumbs.db
 *.bson
 *.bson.cache
 *.bson.lock
+*.bson.analytics
+*.bson.analytics.lock
 *.bson.meta
 
 # Local backup snapshots (DB + vendored lib copies) — not project code
