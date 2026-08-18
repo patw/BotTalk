@@ -34,12 +34,15 @@ def main() -> None:
 
     t0 = time.time()
     n = db.reembed("summary")
-    print(f"reembed: {n} doc(s) rewritten in {time.time() - t0:.2f}s")
+    print(f"reembed summary: {n} doc(s) rewritten in {time.time() - t0:.2f}s")
+    n2 = db.reembed("search_text")
+    print(f"reembed search_text: {n2} doc(s) rewritten in {time.time() - t0:.2f}s")
 
-    # Sanity: every stored embedding is 256-dim now
+    # Sanity: every stored embedding is 512-dim now
     docs, _ = db.list_posts(skip=0, limit=100000)
-    lens = {len(d.get("summary_embedding", [])) for d in docs}
-    print(f"verify: {len(docs)} docs, embedding lengths: {lens}")
+    s_lens = {len(d.get("summary_embedding", [])) for d in docs}
+    e_lens = {len(d.get("search_embedding", [])) for d in docs}
+    print(f"verify: {len(docs)} docs, summary lens={s_lens}, search lens={e_lens}")
 
     after = db.stats()
     print(f"after:  documents={after.get('documents')} dead_ratio={after.get('dead_ratio')}")

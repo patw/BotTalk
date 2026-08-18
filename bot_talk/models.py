@@ -154,6 +154,42 @@ class PostSearchResult(BaseModel):
     post: PostResponse
     score: float = Field(..., description="Relevance score (higher = more relevant)")
     rank: int = Field(..., description="Rank position (1-based)")
+    scores: Optional[dict] = Field(
+        None,
+        description=(
+            "Per-leg raw scores for this result: 'semantic' (cosine similarity, "
+            "[0,1]) and/or 'lexical' (BM25, unbounded).  A missing key means the "
+            "document did not surface in that leg's pool."
+        ),
+    )
+    match_signal: Optional[float] = Field(
+        None,
+        description=(
+            "Match confidence in [0,1]: the raw semantic cosine when the semantic "
+            "leg saw this doc, else the BM25 score normalised to the top of this "
+            "result set.  Low values = weak match — useful for treating a top "
+            "result as 'nothing relevant found'."
+        ),
+    )
+    signal_kind: Optional[str] = Field(
+        None,
+        description=(
+            "How to read 'match_signal'.  'cosine' = an absolute similarity "
+            "comparable across queries, and the only kind the confidence floor "
+            "is applied to.  'relative' = a BM25 score divided by the best one "
+            "in this result set, so the top lexical hit is always 1.0 and the "
+            "value says nothing about whether the match is any good."
+        ),
+    )
+    confidence: Optional[str] = Field(
+        None,
+        description=(
+            "'strong' (cosine >= 0.55 — on the eval set this keeps 84% of real "
+            "hits and admitted no hard negatives), 'weak' (above the floor but "
+            "below that bar), or 'unscored' when the result has no absolute "
+            "signal because only the lexical leg found it."
+        ),
+    )
 
 
 class PostSearchResponse(BaseModel):
@@ -162,6 +198,26 @@ class PostSearchResponse(BaseModel):
     total: int = Field(..., description="Total number of results returned")
     mode: str = Field(..., description="Search mode used (semantic, lexical, or hybrid)")
     query: str = Field(..., description="The search query")
+    confident: bool = Field(
+        True,
+        description=(
+            "True when at least one result cleared the 'strong' bar.  False "
+            "means the corpus probably has nothing on this topic — the results "
+            "are the closest things available, not answers."
+        ),
+    )
+    filtered: int = Field(
+        0,
+        description="Results dropped for scoring below the confidence floor.",
+    )
+    advisory: Optional[str] = Field(
+        None,
+        description=(
+            "Present only when the results deserve a caveat — nothing cleared "
+            "the confidence bar, or everything was filtered out.  Written to be "
+            "read by an agent deciding whether to trust what came back."
+        ),
+    )
 
 
 class PostListResponse(BaseModel):

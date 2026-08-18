@@ -85,6 +85,26 @@ async def create_post(
     return doc_to_response(doc)
 
 
+# ---------------------------------------------------------------------------
+# Confidence calibration
+# ---------------------------------------------------------------------------
+#
+# Derived from the 2026-08-18 retrieval audit: 25 hand-labelled queries that
+# have an answer, against 9 hand-verified queries that do not.  The fused RRF
+# score cannot tell them apart (AUC 0.74 — a correct answer and a query with no
+# answer both score ~0.032).  The raw semantic cosine can (AUC 0.947).
+#
+#   cosine >= 0.55  keeps 84% of real hits, admitted 0/9 hard negatives
+#   cosine >= 0.45  keeps 96% of real hits, admitted 4/9 hard negatives
+#
+# The floor is deliberately set at the lenient end.  These results are read by
+# LLM agents, which discard an irrelevant post cheaply but cannot recover a
+# relevant one that was never returned — so recall is worth more here than
+# precision, and a few false positives are the right trade.
+SIGNAL_CONFIDENT = 0.55
+SIGNAL_FLOOR = 0.45
+
+
 @router.get(
     "/posts",
     response_model=PostListResponse,
@@ -262,6 +282,18 @@ async def search_posts(
     skip: int = Query(
         0, ge=0, description="Offset for tags-only browse pagination"
     ),
+    min_signal: Optional[float] = Query(
+        None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Confidence floor on the absolute semantic cosine. Defaults to "
+            f"{SIGNAL_FLOOR}; pass 0 to disable filtering and see everything. "
+            "Only results whose signal is an absolute cosine are filtered — a "
+            "post found solely by the lexical leg has no comparable score and "
+            "is always kept."
+        ),
+    ),
     identity: Optional[str] = Query(
         None, description="Narrow search to a specific bot identity"
     ),
@@ -324,33 +356,101 @@ async def search_posts(
 
     if mode == "semantic":
         results = db.search_semantic(
-            q, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode
+            q, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode,
+            with_scores=True,
         )
     elif mode == "lexical":
         results = db.search_lexical(
-            q, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode
+            q, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode,
+            with_scores=True,
         )
     else:
         results = db.search_hybrid(
-            q, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode
+            q, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode,
+            with_scores=True,
         )
 
     get_analytics().record("memory_search", query=q, tags=tag_list, session_id=x_bottalk_session, mode=mode, result_count=len(results))
+
+    # Match-signal: the raw semantic cosine when the semantic leg saw the doc
+    # (absolute scale), else the BM25 score normalised to the strongest lexical
+    # hit in this result set.  Lets agents treat low-signal top results as
+    # "nothing relevant found" instead of trusting the flat RRF rank score.
+    lex_values = [
+        leg.get("lexical") for _, _, leg in results if leg.get("lexical") is not None
+    ]
+    max_lex = max(lex_values) if lex_values else None
+
+    floor = SIGNAL_FLOOR if min_signal is None else min_signal
+
+    scored = []
+    for doc, score, leg in results:
+        sem = leg.get("semantic")
+        lex = leg.get("lexical")
+        if sem is not None:
+            # An absolute cosine: comparable across queries, so the floor and
+            # the confidence bar both mean something.
+            signal, kind = max(0.0, min(1.0, sem)), "cosine"
+        elif lex is not None and max_lex:
+            # A ratio against the best BM25 hit in THIS result set — the top
+            # lexical hit is 1.0 by construction even when it is junk.  Kept
+            # for display, never compared against the floor.
+            signal, kind = max(0.0, min(1.0, lex / max_lex)), "relative"
+        else:
+            signal, kind = None, None
+        scored.append((doc, score, leg, signal, kind))
+
+    kept = [
+        r for r in scored
+        if not (r[4] == "cosine" and r[3] < floor)
+    ]
+    dropped = len(scored) - len(kept)
 
     search_results = [
         PostSearchResult(
             post=doc_to_response(doc),
             score=round(score, 5),
             rank=idx + 1,
+            scores=leg,
+            match_signal=(round(signal, 4) if signal is not None else None),
+            signal_kind=kind,
+            confidence=(
+                "unscored" if kind != "cosine"
+                else "strong" if signal >= SIGNAL_CONFIDENT
+                else "weak"
+            ),
         )
-        for idx, (doc, score) in enumerate(results)
+        for idx, (doc, score, leg, signal, kind) in enumerate(kept)
     ]
+
+    confident = any(
+        r.signal_kind == "cosine" and r.match_signal >= SIGNAL_CONFIDENT
+        for r in search_results
+    )
+
+    advisory = None
+    if not search_results:
+        advisory = (
+            f"No post scored above the confidence floor ({floor}). The corpus "
+            "most likely has nothing on this topic — prefer saying so over "
+            "guessing. Re-run with min_signal=0 to see the near misses."
+        )
+    elif not confident:
+        advisory = (
+            "No result cleared the confidence bar "
+            f"({SIGNAL_CONFIDENT}); these are the closest posts available, not "
+            "necessarily answers. Treat them as leads and verify before "
+            "building on them."
+        )
 
     return PostSearchResponse(
         results=search_results,
         total=len(search_results),
         mode=mode,
         query=q,
+        confident=confident,
+        filtered=dropped,
+        advisory=advisory,
     )
 
 

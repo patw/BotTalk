@@ -5,8 +5,9 @@ Provides all CRUD and search operations on top of the moofile BSON store.
 The collection uses:
   - Regular indexes on ``identity`` and ``tags`` for fast filtering.
   - Text indexes (BM25) on ``title``, ``summary``, ``tags``, ``body``.
-  - Vector index on ``summary_embedding`` with auto-embedding from the
-    ``summary`` field via the local voyage-4-nano ONNX model (moofile >= 1.2.0).
+  - Vector indexes on ``summary_embedding`` (from ``summary``) and
+    ``search_embedding`` (from ``search_text`` = summary+body) with
+    auto-embedding via the local voyage-4-nano ONNX model (moofile >= 1.2.0).
 """
 
 from __future__ import annotations
@@ -38,6 +39,13 @@ DEFAULT_DB_PATH = os.path.join(
 # quantization keeps retrieval quality ~1.0000 cosine vs f32 while cutting memory
 # 4x. Model auto-downloaded from HF (onnx-community/voyage-4-nano-ONNX, ~422 MB)
 # to ~/.cache/moofile/models/ on first use.
+#
+# TWO embedding fields:
+#   summary_embedding — from ``summary`` (kept for display/back-compat).
+#   search_embedding  — from ``search_text`` = summary + body.  Semantic search
+#                       uses THIS so body-only knowledge is retrievable (eval
+#                       RUN 4 showed body-only facts were invisible to semantic
+#                       because it only embedded the summary).
 AUTO_EMBED_CONFIG = {
     "summary": {
         # "model" omitted -> moofile's built-in voyage-4-nano default
@@ -49,7 +57,17 @@ AUTO_EMBED_CONFIG = {
         # voyage-4-nano is asymmetric: queries carry an instruction prefix, docs do not.
         "query_prefix": "Represent the query for retrieving supporting documents: ",
         "doc_prefix": "",
-    }
+    },
+    "search_text": {
+        # "model" omitted -> moofile's built-in voyage-4-nano default
+        "target": "search_embedding",
+        "dims": 512,
+        "precision": "int8",
+        "normalize": True,
+        "max_length": 1024,
+        "query_prefix": "Represent the query for retrieving supporting documents: ",
+        "doc_prefix": "",
+    },
 }
 
 # Max results for any search
@@ -136,7 +154,7 @@ class BotTalkDB:
             self._path,
             indexes=["identity"],
             text_indexes=["title", "summary", "tags", "body"],
-            vector_indexes={"summary_embedding": 512},
+            vector_indexes={"summary_embedding": 512, "search_embedding": 512},
             auto_embed=self._auto_embed,
         )
         return self._db
@@ -201,6 +219,7 @@ class BotTalkDB:
             "updated_at": None,
             "update_history": [],
             "human_annotation": None,
+            "search_text": self._build_search_text(summary, body),
         }
         return self.db.insert(doc)
 
@@ -277,6 +296,13 @@ class BotTalkDB:
             set_fields["human_annotation"] = update.human_annotation
             changes_parts.append("human_annotation")
 
+        # Rebuild the semantic search text whenever summary or body changes.
+        if "summary" in set_fields or "body" in set_fields:
+            set_fields["search_text"] = self._build_search_text(
+                set_fields.get("summary", doc.get("summary", "")),
+                set_fields.get("body", doc.get("body", "")),
+            )
+
         if not set_fields:
             return doc  # No changes
 
@@ -327,19 +353,25 @@ class BotTalkDB:
         identity: str | None = None,
         tags: list[str] | None = None,
         tag_mode: str = "any",
-    ) -> list[tuple[dict, float]]:
-        """Semantic (vector) search on the summary field.
+        with_scores: bool = False,
+    ) -> list:
+        """Semantic (vector) search on the ``search_text`` (summary+body) field.
 
-        The query text is embedded automatically using the configured GGUF model.
-        Returns ``[(doc, score), ...]`` sorted by relevance (descending).
+        The query text is embedded automatically using the configured model.
+        Returns ``[(doc, score), ...]`` sorted by relevance (descending), or —
+        with ``with_scores=True`` — ``[(doc, score, {"semantic": score})]``
+        where score is the raw cosine similarity.
         """
         tags = self._expand_query_tags(tags, tag_mode)
         pre_filter = self._build_search_filter(identity, tags, tag_mode)
-        return (
+        results = (
             self.db.find(pre_filter)
-            .semantic("summary", query, limit=limit)
+            .semantic("search_text", query, limit=limit)
             .to_list()
         )
+        if with_scores:
+            return [(doc, score, {"semantic": score}) for doc, score in results]
+        return results
 
     def search_lexical(
         self,
@@ -348,7 +380,8 @@ class BotTalkDB:
         identity: str | None = None,
         tags: list[str] | None = None,
         tag_mode: str = "any",
-    ) -> list[tuple[dict, float]]:
+        with_scores: bool = False,
+    ) -> list:
         """Lexical (BM25) search across indexed text fields.
 
         Searches ``title``, ``summary``, ``tags`` and ``body``.
@@ -381,8 +414,12 @@ class BotTalkDB:
         # Sort by score descending
         sorted_results = sorted(
             all_results.values(), key=lambda x: x[1], reverse=True
-        )
-        return sorted_results[:limit]
+        )[:limit]
+        if with_scores:
+            return [
+                (doc, score, {"lexical": score}) for doc, score in sorted_results
+            ]
+        return sorted_results
 
     def search_hybrid(
         self,
@@ -391,11 +428,15 @@ class BotTalkDB:
         identity: str | None = None,
         tags: list[str] | None = None,
         tag_mode: str = "any",
-    ) -> list[tuple[dict, float]]:
+        with_scores: bool = False,
+    ) -> list:
         """Hybrid search: BM25 + semantic vector search fused via RRF.
 
-        The semantic leg uses auto-embedding on the query text.
-        Both result sets are combined using Reciprocal Rank Fusion.
+        The semantic leg embeds the query and compares against
+        ``search_embedding`` (summary+body).  Both result sets are combined
+        using Reciprocal Rank Fusion.  With ``with_scores=True`` returns
+        ``[(doc, rrf_score, {"semantic": cos|None, "lexical": bm25|None})]``
+        so callers can judge match confidence (and detect "nothing relevant").
         """
         tags = self._expand_query_tags(tags, tag_mode)
         pre_filter = self._build_search_filter(identity, tags, tag_mode)
@@ -403,7 +444,7 @@ class BotTalkDB:
         # Get both result sets
         semantic_results = (
             self.db.find(pre_filter)
-            .semantic("summary", query, limit=limit * 3)
+            .semantic("search_text", query, limit=limit * 3)
             .to_list()
         )
 
@@ -442,13 +483,30 @@ class BotTalkDB:
 
         # Build final results
         doc_map: dict[str, dict] = {}
-        for doc, _ in semantic_results:
+        sem_scores: dict[str, float] = {}
+        for doc, sc in semantic_results:
             doc_map[doc["_id"]] = doc
-        for doc_id, (doc, _) in lexical_results.items():
+            sem_scores[doc["_id"]] = sc
+        lex_scores: dict[str, float] = {}
+        for doc_id, (doc, sc) in lexical_results.items():
             doc_map[doc_id] = doc
+            lex_scores[doc_id] = sc
 
         fused = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
-        return [(doc_map[did], score) for did, score in fused[:limit]]
+        top = fused[:limit]
+        if not with_scores:
+            return [(doc_map[did], score) for did, score in top]
+        return [
+            (
+                doc_map[did],
+                score,
+                {
+                    "semantic": sem_scores.get(did),
+                    "lexical": lex_scores.get(did),
+                },
+            )
+            for did, score in top
+        ]
 
     # ------------------------------------------------------------------
     # Stats
@@ -632,6 +690,16 @@ class BotTalkDB:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_search_text(summary: str, body: str) -> str:
+        """Combine summary + body into the semantic search text (``search_text``).
+
+        Summary first (it carries the headline semantic content), then the body
+        so body-only facts are retrievable.  This is what ``search_embedding``
+        embeds.
+        """
+        return f"{summary or ''}\n\n{body or ''}".strip()
 
     @staticmethod
     def _build_search_filter(

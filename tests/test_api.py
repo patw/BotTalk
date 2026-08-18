@@ -681,6 +681,92 @@ class TestSearch:
 # ======================== Stats & Health Tests ========================
 
 
+class TestSearchConfidence:
+    """The confidence floor: search must be able to say it found nothing.
+
+    The fused RRF score cannot express doubt (a correct answer and a query with
+    no answer both score ~0.032), so the API exposes the raw semantic cosine as
+    `match_signal` and filters on it.
+    """
+
+    AUTH = TestSearch.AUTH
+
+    def _seed(self, client: TestClient):
+        TestSearch()._seed(client)
+
+    def test_lexical_hits_are_never_filtered(self, client: TestClient):
+        """A lexical-only hit has no absolute score, so the floor cannot apply.
+
+        Its signal is a ratio against the best BM25 hit in the same result set,
+        which makes the top hit 1.0 by construction — filtering on that would
+        be filtering on nothing.
+        """
+        self._seed(client)
+        resp = client.get("/api/search?q=python&mode=lexical", headers=self.AUTH)
+        data = resp.json()
+        assert data["total"] >= 1
+        assert data["filtered"] == 0
+        for r in data["results"]:
+            assert r["signal_kind"] == "relative"
+            assert r["confidence"] == "unscored"
+
+    def test_signal_and_confidence_are_reported(self, client_with_embed: TestClient):
+        self._seed(client_with_embed)
+        resp = client_with_embed.get(
+            "/api/search?q=machine+learning&mode=semantic", headers=self.AUTH
+        )
+        data = resp.json()
+        assert data["total"] >= 1
+        top = data["results"][0]
+        assert top["signal_kind"] == "cosine"
+        assert 0.0 <= top["match_signal"] <= 1.0
+        assert top["confidence"] in ("strong", "weak")
+
+    def test_floor_filters_and_reports_the_count(self, client_with_embed: TestClient):
+        """min_signal=1.0 can never be met, so everything scored is dropped."""
+        self._seed(client_with_embed)
+        resp = client_with_embed.get(
+            "/api/search?q=machine+learning&mode=semantic&min_signal=1.0",
+            headers=self.AUTH,
+        )
+        data = resp.json()
+        assert data["results"] == []
+        assert data["total"] == 0
+        assert data["filtered"] > 0
+        assert data["confident"] is False
+        assert data["advisory"] is not None
+        assert "min_signal=0" in data["advisory"]
+
+    def test_min_signal_zero_disables_filtering(self, client_with_embed: TestClient):
+        self._seed(client_with_embed)
+        base = client_with_embed.get(
+            "/api/search?q=machine+learning&mode=semantic&min_signal=0",
+            headers=self.AUTH,
+        ).json()
+        assert base["filtered"] == 0
+        assert base["total"] >= 1
+
+    def test_unrelated_query_is_not_reported_as_confident(
+        self, client_with_embed: TestClient
+    ):
+        """The whole point: an off-topic query must not come back confident."""
+        self._seed(client_with_embed)
+        data = client_with_embed.get(
+            "/api/search?q=sous+vide+chicken+breast+temperature&min_signal=0",
+            headers=self.AUTH,
+        ).json()
+        assert data["confident"] is False
+        assert data["advisory"] is not None
+
+    def test_tags_only_browse_is_confident(self, client: TestClient):
+        """Tag browse is an exact filter, not a fuzzy match — no caveat needed."""
+        self._seed(client)
+        data = client.get("/api/search?tags=python", headers=self.AUTH).json()
+        assert data["mode"] == "tags"
+        assert data["confident"] is True
+        assert data["advisory"] is None
+
+
 class TestStats:
     """GET /api/stats."""
 
