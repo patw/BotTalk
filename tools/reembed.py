@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""One-off re-embed: rewrite every stored summary_embedding at the configured
-width (voyage-4-nano, 256-dim int8 as of the 2026-08-16 migration).
+"""One-off re-embed: rewrite the stored summary and body-aware search
+embeddings at the configured voyage-4-nano width (512-dim int8).
 
 Run with the project venv, with the bottalk service STOPPED (the service's
 in-memory index would otherwise go stale while this rewrites the collection):

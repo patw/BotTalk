@@ -28,7 +28,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Install moofile from PyPI (it will build the native extension from source
 # since no pre-built wheel matches the container's Python exactly)
-RUN pip install --no-cache-dir moofile "fastapi[standard]" uvicorn python-multipart itsdangerous "jinja2<3.1.6"
+RUN pip install --no-cache-dir moofile==1.2.2 "fastapi[standard]" uvicorn python-multipart itsdangerous "jinja2<3.1.6"
 
 # ── Runtime stage ──────────────────────────────────────────────────────────
 FROM python:3.14-slim-bookworm AS runtime
