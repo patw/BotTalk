@@ -30,12 +30,14 @@ class AnalyticsDB:
     def record(self, event: str, post_id: str | None = None,
                tags: list[str] | None = None, query: str | None = None,
                session_id: str | None = None, mode: str | None = None,
-               result_count: int | None = None, created_at=None) -> None:
+               result_count: int | None = None, result_ids: list | None = None,
+               created_at=None) -> None:
         now = datetime.now(timezone.utc)
         self.db.insert({
             "event": event, "post_id": post_id, "tags": tags or [],
             "query": query, "session_id": session_id, "mode": mode,
-            "result_count": result_count, "created_at": created_at,
+            "result_count": result_count, "result_ids": result_ids or [],
+            "created_at": created_at,
             "timestamp": now, "date": now.date().isoformat(),
         })
 
@@ -71,15 +73,37 @@ class AnalyticsDB:
             for tag in doc.get("tags") or []: tag_coverage[tag] += 1
             identity_hits[doc.get("identity") or "unknown"] += memory_hits.get(doc.get("_id"), 0)
 
-        # A search is considered acted upon when the same session retrieves a
-        # memory within five minutes. Clients may supply X-BotTalk-Session.
+        # Search-to-access funnel. A search counts as acted-upon when a memory
+        # it returned is retrieved within five minutes (post_id funnel, recorded
+        # on every search as result_ids), or when the same session retrieves a
+        # memory within five minutes (session funnel, when X-BotTalk-Session is
+        # supplied). The post_id funnel needs no client changes and is the
+        # primary signal.
+        WINDOW = timedelta(minutes=5)
+        access_by_post: dict[str, list] = defaultdict(list)
+        for a in accesses:
+            if a.get("post_id") and a.get("timestamp"):
+                access_by_post[a["post_id"]].append(a["timestamp"])
+
+        def _result_accessed_soon(post_ids, ts) -> bool:
+            if not ts or not post_ids:
+                return False
+            for pid in post_ids:
+                if any(timedelta(0) <= ats - ts <= WINDOW
+                       for ats in access_by_post.get(pid, ())):
+                    return True
+            return False
+
         acted_searches = 0
         for search in searches:
-            sid = search.get("session_id")
             ts = search.get("timestamp")
-            if sid and ts and any(a.get("session_id") == sid and a.get("timestamp") and
-                                  timedelta(0) <= a["timestamp"] - ts <= timedelta(minutes=5)
-                                  for a in accesses):
+            sid = search.get("session_id")
+            if _result_accessed_soon(search.get("result_ids") or [], ts):
+                acted_searches += 1
+            elif (sid and ts and any(
+                    a.get("session_id") == sid and a.get("timestamp") and
+                    timedelta(0) <= a["timestamp"] - ts <= WINDOW
+                    for a in accesses)):
                 acted_searches += 1
         daily = []
         for i in range(days):

@@ -338,7 +338,7 @@ async def search_posts(
         docs, total = db.list_posts(
             skip=skip, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode
         )
-        get_analytics().record("memory_search", query=q, tags=tag_list, session_id=x_bottalk_session, mode="tags", result_count=total)
+        get_analytics().record("memory_search", query=q, tags=tag_list, session_id=x_bottalk_session, mode="tags", result_count=total, result_ids=[doc.get("_id") for doc in docs])
         search_results = [
             PostSearchResult(
                 post=doc_to_response(doc),
@@ -370,7 +370,7 @@ async def search_posts(
             with_scores=True,
         )
 
-    get_analytics().record("memory_search", query=q, tags=tag_list, session_id=x_bottalk_session, mode=mode, result_count=len(results))
+    get_analytics().record("memory_search", query=q, tags=tag_list, session_id=x_bottalk_session, mode=mode, result_count=len(results), result_ids=[doc.get("_id") for doc, _, _ in results])
 
     # Match-signal: the raw semantic cosine when the semantic leg saw the doc
     # (absolute scale), else the BM25 score normalised to the strongest lexical
