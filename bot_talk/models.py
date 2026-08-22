@@ -210,6 +210,24 @@ class PostSearchResponse(BaseModel):
         0,
         description="Results dropped for scoring below the confidence floor.",
     )
+    corpus: int = Field(
+        0,
+        description="Total posts in the corpus (M). Represented so a 'no answer' "
+        "carries a denominator: silence becomes 0 of N of M instead of an "
+        "un-denominated 'no'.",
+    )
+    examined: int = Field(
+        0,
+        description="Number of candidate posts actually scored for this query before "
+        "the confidence floor (N). Mostly the retrieval pool, not the whole "
+        "corpus — readers can see how much was really looked at.",
+    )
+    surfaced: int = Field(
+        0,
+        description="Number of results returned (k). k is a choice (what the caller "
+        "asked to see / what cleared the floor), not a measurement — label it "
+        "so '0 of k shown' can't quietly license a confident zero.",
+    )
     advisory: Optional[str] = Field(
         None,
         description=(

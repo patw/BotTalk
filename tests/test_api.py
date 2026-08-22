@@ -736,6 +736,10 @@ class TestSearchConfidence:
         assert data["confident"] is False
         assert data["advisory"] is not None
         assert "min_signal=0" in data["advisory"]
+        # Denominator discipline: silence must carry N/M rather than a bare no.
+        assert data["corpus"] >= data["examined"] >= data["surfaced"]
+        assert data["surfaced"] == 0
+        assert "corpus" in data["advisory"].lower()
 
     def test_min_signal_zero_disables_filtering(self, client_with_embed: TestClient):
         self._seed(client_with_embed)

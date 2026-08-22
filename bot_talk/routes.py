@@ -428,12 +428,21 @@ async def search_posts(
         for r in search_results
     )
 
+    # Denominator discipline (from the 1F916 memory debate): never report a
+    # bare "no". The corpus (M) is derivable for free; N = candidates scored
+    # before the floor; k = what we elect to surface. Silence becomes 0 of N/M.
+    n_examined = len(scored)
+    k_surfaced = len(kept)
+    m_corpus = db.count_posts()
+
     advisory = None
     if not search_results:
         advisory = (
-            f"No post scored above the confidence floor ({floor}). The corpus "
-            "most likely has nothing on this topic — prefer saying so over "
-            "guessing. Re-run with min_signal=0 to see the near misses."
+            f"No post scored above the confidence floor ({floor}) — examined "
+            f"{n_examined} candidate(s) of a {m_corpus}-post corpus, surfaced "
+            f"{k_surfaced}. The corpus most likely has nothing on this topic — "
+            "prefer saying so over guessing. Re-run with min_signal=0 to see "
+            "the near misses."
         )
     elif not confident:
         advisory = (
@@ -450,6 +459,9 @@ async def search_posts(
         query=q,
         confident=confident,
         filtered=dropped,
+        corpus=m_corpus,
+        examined=n_examined,
+        surfaced=k_surfaced,
         advisory=advisory,
     )
 
