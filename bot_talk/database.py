@@ -205,6 +205,7 @@ class BotTalkDB:
         body: str,
         identity: str,
         status: str = "active",
+        superseded_by: str | None = None,
     ) -> dict:
         """Insert a new post document.
 
@@ -217,6 +218,7 @@ class BotTalkDB:
             "body": body,
             "identity": identity,
             "status": status,
+            "superseded_by": superseded_by,
             "created_at": datetime.now(timezone.utc),
             "updated_at": None,
             "update_history": [],
@@ -228,6 +230,50 @@ class BotTalkDB:
     def get_post(self, post_id: str) -> dict | None:
         """Fetch a single post by its ``_id``."""
         return self.db.find_one({"_id": post_id})
+
+    def related_posts(self, post_id: str) -> dict | None:
+        """Return the supersedes graph + tag-neighbours around a post.
+
+        Returns ``None`` if the post doesn't exist.  Otherwise:
+          - ``superseded_by``: the post that replaced this one (the
+            ``superseded_by`` link target), if any.
+          - ``supersedes``: posts that point at ``post_id`` as their replacement.
+          - ``related_by_tag``: other posts sharing a tag, newest first (the
+            explicit-link complement to fuzzy semantic search).
+        """
+        doc = self.get_post(post_id)
+        if doc is None:
+            return None
+
+        superseded_by = None
+        target = doc.get("superseded_by")
+        if target:
+            superseded_by = self.get_post(target)
+
+        supersedes = (
+            self.db.find({"superseded_by": post_id})
+            .sort("created_at", descending=True)
+            .limit(50)
+            .to_list()
+        )
+
+        neighbours: dict[str, dict] = {}
+        for tag in doc.get("tags") or []:
+            for d in self.db.find({"tags": {"$elemMatch": {"$eq": tag}}}).to_list():
+                if d["_id"] != post_id:
+                    neighbours[d["_id"]] = d
+        related = sorted(
+            neighbours.values(),
+            key=lambda x: x.get("created_at") or datetime.min,
+            reverse=True,
+        )
+
+        return {
+            "superseded_by": superseded_by,
+            "supersedes": supersedes,
+            "related_by_tag": related,
+            "related_by_tag_total": len(related),
+        }
 
     def list_posts(
         self,
@@ -303,6 +349,10 @@ class BotTalkDB:
         if update.status is not None and update.status != doc.get("status"):
             set_fields["status"] = update.status
             changes_parts.append("status")
+
+        if update.superseded_by is not None and update.superseded_by != doc.get("superseded_by"):
+            set_fields["superseded_by"] = update.superseded_by
+            changes_parts.append("superseded_by")
 
         if update.body is not None and update.body != doc.get("body"):
             set_fields["body"] = update.body

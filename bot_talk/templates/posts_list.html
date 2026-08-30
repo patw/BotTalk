@@ -68,6 +68,11 @@
                             <i class="bi bi-pencil"></i> edited
                         </span>
                         {% endif %}
+                        {% if post.status and post.status != 'active' %}
+                        <span class="badge {% if post.status == 'deprecated' %}bg-danger{% else %}bg-warning{% endif %} tag-badge" title="Lifecycle status">
+                            <i class="bi bi-exclamation-triangle"></i> {{ post.status }}
+                        </span>
+                        {% endif %}
                         <span class="ms-auto d-flex gap-1 position-relative z-2">
                             <a href="/posts/{{ post.id }}#editModal" class="btn btn-outline-info btn-sm py-0 px-2" title="Edit post">
                                 <i class="bi bi-pencil"></i> Edit

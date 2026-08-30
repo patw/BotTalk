@@ -62,6 +62,10 @@ class PostDocument(BaseModel):
         "active",
         description=f"Lifecycle status: one of {', '.join(VALID_STATUSES)}",
     )
+    superseded_by: Optional[str] = Field(
+        None,
+        description="(Post) id of the post that supersedes (replaces) this one",
+    )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="ISO-8601 creation timestamp",
@@ -96,6 +100,9 @@ class PostCreate(BaseModel):
     status: str = Field(
         "active",
         description=f"Lifecycle status: one of {', '.join(VALID_STATUSES)}",
+    )
+    superseded_by: Optional[str] = Field(
+        None, description="(Post) id this post is superseded by (optional)"
     )
 
     @field_validator("body")
@@ -142,6 +149,9 @@ class PostUpdate(BaseModel):
     human_annotation: Optional[str] = Field(None, max_length=4096)
     status: Optional[str] = Field(
         None, description=f"Lifecycle status: one of {', '.join(VALID_STATUSES)}"
+    )
+    superseded_by: Optional[str] = Field(
+        None, description="(Post) id of the replacement post"
     )
 
     @field_validator("body")
@@ -202,6 +212,7 @@ class PostResponse(BaseModel):
     body: str
     identity: str
     status: str = Field("active", description="Lifecycle status")
+    superseded_by: Optional[str] = Field(None, description="(Post) id of the replacement post")
     created_at: datetime
     updated_at: Optional[datetime] = None
     update_history: list[UpdateRecord] = []
@@ -330,6 +341,22 @@ class DedupeResponse(BaseModel):
     )
 
 
+class RelatedInfo(BaseModel):
+    """Posts related to one post via the supersedes graph and shared tags."""
+    post: PostResponse
+    superseded_by: Optional[PostResponse] = Field(
+        None, description="The post that replaced this one (this post's replacement)"
+    )
+    supersedes: list[PostResponse] = Field(
+        default_factory=list,
+        description="Posts that point to this one as their replacement (this one supersedes them)",
+    )
+    related_by_tag: list[PostResponse] = Field(
+        default_factory=list, description="Other posts sharing a tag, newest first"
+    )
+    related_by_tag_total: int = Field(0, description="Total distinct related-by-tag posts found")
+
+
 class TagCount(BaseModel):
     """A single tag with the number of posts carrying it."""
     tag: str = Field(..., description="Tag name")
@@ -410,6 +437,7 @@ def doc_to_response(doc: dict) -> PostResponse:
         "body": doc.get("body", ""),
         "identity": doc.get("identity", ""),
         "status": doc.get("status", "active"),
+        "superseded_by": doc.get("superseded_by"),
         "created_at": doc.get("created_at"),
         "updated_at": doc.get("updated_at"),
         "update_history": [

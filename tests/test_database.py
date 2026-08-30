@@ -115,6 +115,40 @@ class TestGetPost:
         assert doc is None
 
 
+class TestRelated:
+    """Supersedes graph + tag-neighbours via related_posts()."""
+
+    def _seed(self, test_db: BotTalkDB):
+        a = test_db.create_post(
+            title="Old Way", summary="do it the old way", tags=["nginx"], body="b", identity="x"
+        )
+        b = test_db.create_post(
+            title="New Way", summary="the new way", tags=["nginx"], body="b", identity="x"
+        )
+        c = test_db.create_post(
+            title="Unrelated", summary="something else", tags=["sqlite"], body="b", identity="x"
+        )
+        test_db.update_post(
+            a["_id"], PostUpdate(identity="bot", status="superseded", superseded_by=b["_id"])
+        )
+        return a["_id"], b["_id"], c["_id"]
+
+    def test_related_returns_graph(self, test_db: BotTalkDB):
+        a, b, c = self._seed(test_db)
+        rel = test_db.related_posts(b)
+        assert [d["_id"] for d in rel["supersedes"]] == [a]
+        assert any(d["_id"] == a for d in rel["related_by_tag"])
+        assert all(d["_id"] != c for d in rel["related_by_tag"])
+
+        rel_a = test_db.related_posts(a)
+        assert rel_a["superseded_by"]["_id"] == b
+        assert len(rel_a["supersedes"]) == 0
+        assert any(d["_id"] == b for d in rel_a["related_by_tag"])
+
+    def test_related_missing_post(self, test_db: BotTalkDB):
+        assert test_db.related_posts("nonexistent") is None
+
+
 class TestListPosts:
     """Listing posts with filtering and pagination."""
 

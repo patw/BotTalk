@@ -37,6 +37,7 @@ from .models import (
     PostSearchResponse,
     PostSearchResult,
     PostUpdate,
+    RelatedInfo,
     StatusResponse,
     TagLintResponse,
     TagListResponse,
@@ -239,6 +240,41 @@ async def get_post(
         )
     get_analytics().record("memory_access", post_id=post_id, tags=doc.get("tags"), session_id=x_bottalk_session, created_at=doc.get("created_at"))
     return doc_to_response(doc)
+
+
+@router.get(
+    "/posts/{post_id}/related",
+    response_model=RelatedInfo,
+    summary="Posts related to one post (supersedes graph + shared tags)",
+)
+async def related(
+    post_id: str,
+    db: BotTalkDB = Depends(_get_db),
+    _=Depends(verify_api_key),
+):
+    """Return what this post replaced, what replaced it, and tag-neighbours.
+
+    ``superseded_by`` = the post that supersedes (replaces) this one.
+    ``supersedes`` = posts that named this post as their replacement.
+    ``related_by_tag`` = other posts sharing a tag (newest first) — the explicit
+    graph complement to fuzzy semantic search.
+    """
+    related_docs = db.related_posts(post_id)
+    if related_docs is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Post '{post_id}' not found",
+        )
+    return RelatedInfo(
+        post=doc_to_response(db.get_post(post_id)),
+        superseded_by=(
+            doc_to_response(related_docs["superseded_by"])
+            if related_docs["superseded_by"] else None
+        ),
+        supersedes=[doc_to_response(d) for d in related_docs["supersedes"]],
+        related_by_tag=[doc_to_response(d) for d in related_docs["related_by_tag"]],
+        related_by_tag_total=related_docs["related_by_tag_total"],
+    )
 
 
 @router.put(

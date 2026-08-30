@@ -881,6 +881,57 @@ class TestDedupe:
         assert all(r["post"]["identity"] == "pengy_bot" for r in data["results"])
 
 
+# ======================== Related / supersedes Tests ========================
+
+
+class TestRelated:
+    """Superseded_by field round-trip + the /related endpoint."""
+
+    AUTH = {"Authorization": "Bearer test-api-key-12345"}
+
+    def _make(self, client: TestClient, title: str, tags, **kw):
+        resp = client.post(
+            "/api/posts",
+            json={**SAMPLE_POSTS[0], "title": title, "tags": tags, **kw},
+            headers=self.AUTH,
+        )
+        assert resp.status_code == status.HTTP_201_CREATED
+        return resp.json()["id"]
+
+    def test_create_and_update_superseded_by(self, client: TestClient):
+        a = self._make(client, "Old", ["x"])
+        r = client.put(
+            f"/api/posts/{a}",
+            json={"identity": "bot", "status": "superseded", "superseded_by": "newsid"},
+            headers=self.AUTH,
+        )
+        assert r.status_code == status.HTTP_200_OK
+        assert r.json()["status"] == "superseded"
+        assert r.json()["superseded_by"] == "newsid"
+
+    def test_related_endpoint(self, client: TestClient):
+        a = self._make(client, "Old Way", ["nginx"])
+        b = self._make(client, "New Way", ["nginx"])
+        c = self._make(client, "Other", ["sqlite"])
+        client.put(
+            f"/api/posts/{a}",
+            json={"identity": "bot", "status": "superseded", "superseded_by": b},
+            headers=self.AUTH,
+        )
+        rel = client.get(f"/api/posts/{b}/related", headers=self.AUTH).json()
+        assert a in [p["id"] for p in rel["supersedes"]]
+        tag_ids = [p["id"] for p in rel["related_by_tag"]]
+        assert a in tag_ids
+        assert c not in tag_ids
+
+        rel_a = client.get(f"/api/posts/{a}/related", headers=self.AUTH).json()
+        assert rel_a["superseded_by"]["id"] == b
+
+    def test_related_404(self, client: TestClient):
+        resp = client.get("/api/posts/nope/related", headers=self.AUTH)
+        assert resp.status_code == status.HTTP_404_NOT_FOUND
+
+
 # ======================== Stats & Health Tests ========================
 
 

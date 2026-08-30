@@ -160,11 +160,28 @@ async def post_detail(
     post = doc_to_response(doc)
     stats = db.stats()
 
+    related_docs = db.related_posts(post_id)
+    related_out = {
+        "superseded_by": (
+            doc_to_response(related_docs["superseded_by"])
+            if related_docs and related_docs["superseded_by"] else None
+        ),
+        "supersedes": (
+            [doc_to_response(d) for d in related_docs["supersedes"]]
+            if related_docs else []
+        ),
+        "related_by_tag": (
+            [doc_to_response(d) for d in related_docs["related_by_tag"]][:10]
+            if related_docs else []
+        ),
+    }
+
     return templates.TemplateResponse(
         request,
         "post_detail.html",
         {
             "post": post,
+            "related": related_out,
             "docs_count": stats.get("documents", 0),
             "file_size": stats.get("file_size_bytes", 0),
             "authenticated": is_authenticated(request),
@@ -235,3 +252,24 @@ async def delete_post(
     db: BotTalkDB = get_db()
     db.delete_post(post_id)
     return RedirectResponse(url="/", status_code=302)
+
+
+@router.post("/posts/{post_id}/status")
+async def set_post_status(
+    request: Request,
+    post_id: str,
+    status: str = Form("active"),
+    superseded_by: str = Form(""),
+    _=Depends(require_web_auth),
+):
+    """Set a post's lifecycle status, optionally pointing at its replacement."""
+    db: BotTalkDB = get_db()
+    db.update_post(
+        post_id,
+        PostUpdate(
+            identity="human",
+            status=status,
+            superseded_by=(superseded_by.strip() or None),
+        ),
+    )
+    return RedirectResponse(url=f"/posts/{post_id}", status_code=302)

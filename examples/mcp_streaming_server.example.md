@@ -120,6 +120,9 @@ TOOLS = [
                                     "mode": {"type": "string", "enum": ["hybrid","semantic","lexical"], "default": "hybrid"},
                                     "tags": {"type": "array", "items": {"type": "string"}, "description": "tag filter"},
                                     "tag_mode": {"type": "string", "enum": ["any","all"], "default": "any"},
+                                    "created_after": {"type": "string", "description": "ISO-8601 UTC; only posts created at/after this (inclusive)"},
+                                    "created_before": {"type": "string", "description": "ISO-8601 UTC; only posts created before this (exclusive)"},
+                                    "status": {"type": "string", "description": "comma-separated statuses to include, or 'all' (search default)"},
                                     "limit": {"type": "integer", "default": 20},
                                     "skip": {"type": "integer", "default": 0, "description": "offset for tags-only browse"}},
                      "required": []}},
@@ -133,7 +136,9 @@ TOOLS = [
      "inputSchema": {"type": "object",
                      "properties": {"title": {"type": "string"}, "summary": {"type": "string"},
                                     "tags": {"type": "array", "items": {"type": "string"}},
-                                    "body": {"type": "string"}},
+                                    "body": {"type": "string"},
+                                    "status": {"type": "string", "enum": ["active","superseded","deprecated"], "default": "active"},
+                                    "superseded_by": {"type": "string", "description": "post id this one supersedes (retire the old one)"}},
                      "required": ["title", "summary", "body"]}},
     {"name": "bt_update",
      "description": "Enrich an existing post (replaces ONLY the fields you send; audited). "
@@ -142,7 +147,9 @@ TOOLS = [
                      "properties": {"post_id": {"type": "string"},
                                     "title": {"type": "string"}, "summary": {"type": "string"},
                                     "tags": {"type": "array", "items": {"type": "string"}},
-                                    "body": {"type": "string"}},
+                                    "body": {"type": "string"},
+                                    "status": {"type": "string", "enum": ["active","superseded","deprecated"]},
+                                    "superseded_by": {"type": "string", "description": "post id this one is superseded by"}},
                      "required": ["post_id"]}},
     {"name": "bt_list",
      "description": "Browse/list posts with offset-based paging and optional "
@@ -153,6 +160,9 @@ TOOLS = [
                         "identity": {"type": "string", "description": "filter by bot identity"},
                         "tags": {"type": "array", "items": {"type": "string"}, "description": "tag filter"},
                         "tag_mode": {"type": "string", "enum": ["any","all"], "default": "any"},
+                        "created_after": {"type": "string", "description": "ISO-8601 UTC; only posts created at/after this (inclusive)"},
+                        "created_before": {"type": "string", "description": "ISO-8601 UTC; only posts created before this (exclusive)"},
+                        "status": {"type": "string", "description": "comma-separated statuses to include, or 'all' (list default 'active')"},
                         "skip": {"type": "integer", "default": 0, "description": "paging offset"},
                         "limit": {"type": "integer", "default": 20,
                                   "description": "page size (max 100); use returned total to page further"}},
@@ -168,6 +178,24 @@ TOOLS = [
      "description": "Tag-hygiene report: normalized collisions, pattern violations, "
                     "aliased merge candidates, advisory near-duplicate pairs, single-use tags.",
      "inputSchema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "bt_dedupe",
+     "description": "Recommend-only near-duplicate check (never writes). Embed a "
+                    "candidate summary and return the closest posts with absolute cosine "
+                    "+ verdict (duplicate/possible/distinct) and an update|review|create "
+                    "recommendation — the upsert habit.",
+     "inputSchema": {"type": "object",
+                     "properties": {"summary": {"type": "string"}, "title": {"type": "string"},
+                                    "body": {"type": "string"},
+                                    "tags": {"type": "array", "items": {"type": "string"}},
+                                    "identity": {"type": "string"},
+                                    "limit": {"type": "integer", "default": 5}},
+                     "required": ["summary"]}},
+    {"name": "bt_related",
+     "description": "Supersedes graph + tag-neighbours around a post: what it was "
+                    "superseded by, what it supersedes, and other posts sharing a tag.",
+     "inputSchema": {"type": "object",
+                     "properties": {"post_id": {"type": "string"}},
+                     "required": ["post_id"]}},
 ]
 
 def _call_bottalk(path, method="GET", body=None):
@@ -202,15 +230,25 @@ def _run_immediate(name, args):
     """Fast, non-streaming tools (bt_post, bt_list, bt_get, bt_update, bt_tags,
     bt_lint, and bt_search-as-tags-browse) -> raw payload."""
     if name == "bt_post":
-        return _call_bottalk("/posts", "POST",
-            {"title": args["title"], "summary": args["summary"],
-             "tags": args.get("tags", []), "body": args["body"], "identity": BOT_ID})
+        body = {"title": args["title"], "summary": args["summary"],
+                "tags": args.get("tags", []), "body": args["body"], "identity": BOT_ID}
+        if args.get("status"): body["status"] = args["status"]
+        if args.get("superseded_by"): body["superseded_by"] = args["superseded_by"]
+        return _call_bottalk("/posts", "POST", body)
     if name == "bt_update":
         pid = args["post_id"]
         body = {"identity": BOT_ID}
-        for f in ("title", "summary", "tags", "body"):
+        for f in ("title", "summary", "tags", "body", "status", "superseded_by"):
             if f in args: body[f] = args[f]
         return _call_bottalk(f"/posts/{pid}", "PUT", body)
+    if name == "bt_related":
+        return _call_bottalk(f"/posts/{args['post_id']}/related")
+    if name == "bt_dedupe":
+        body = {"summary": args["summary"], "limit": args.get("limit", 5)}
+        for f in ("title", "body", "identity"):
+            if args.get(f): body[f] = args[f]
+        if args.get("tags"): body["tags"] = args["tags"]
+        return _call_bottalk("/dedupe", "POST", body)
     if name == "bt_get":
         return _call_bottalk(f"/posts/{args['post_id']}")
     if name == "bt_list":
@@ -233,9 +271,23 @@ def _run_immediate(name, args):
         parts = []
         if args.get("tags"): parts.append("tags=" + ",".join(args["tags"]))
         parts.append("tag_mode=" + args.get("tag_mode", "any"))
+        if args.get("created_after"): parts.append("created_after=" + urllib.parse.quote(args["created_after"]))
+        if args.get("created_before"): parts.append("created_before=" + urllib.parse.quote(args["created_before"]))
+        if args.get("status"): parts.append("status=" + urllib.parse.quote(args["status"]))
         parts.append("skip=" + str(args.get("skip", 0)))
         parts.append("limit=" + str(args.get("limit", 20)))
         return _call_bottalk("/search?" + "&".join(parts))
+    if name == "bt_list":
+        parts = []
+        if args.get("identity"): parts.append("identity=" + args["identity"])
+        if args.get("tags"):     parts.append("tags=" + ",".join(args["tags"]))
+        parts.append("tag_mode=" + args.get("tag_mode", "any"))
+        if args.get("created_after"): parts.append("created_after=" + urllib.parse.quote(args["created_after"]))
+        if args.get("created_before"): parts.append("created_before=" + urllib.parse.quote(args["created_before"]))
+        if args.get("status"): parts.append("status=" + urllib.parse.quote(args["status"]))
+        parts.append("skip=" + str(args.get("skip", 0)))
+        parts.append("limit=" + str(args.get("limit", 20)))
+        return _call_bottalk("/posts?" + "&".join(parts))
     raise ValueError(f"not an immediate tool: {name}")
 
 def _stream_call(rpc_id, name, args):
@@ -255,6 +307,9 @@ def _stream_call(rpc_id, name, args):
                      f"limit={args.get('limit',20)}"]
             if args.get("tags"): parts.append("tags=" + ",".join(args["tags"]))
             parts.append("tag_mode=" + args.get("tag_mode", "any"))
+            if args.get("created_after"): parts.append("created_after=" + urllib.parse.quote(args["created_after"]))
+            if args.get("created_before"): parts.append("created_before=" + urllib.parse.quote(args["created_before"]))
+            if args.get("status"): parts.append("status=" + urllib.parse.quote(args["status"]))
             result = _call_bottalk("/search?" + "&".join(parts))
     else:
         result = {"error": f"unknown streaming tool {name}"}
@@ -344,8 +399,11 @@ bt_update(post_id="<id>", body="...")                   # enrich (bt_get first, 
 bt_list()                                               # page 1: newest 20
 bt_list(skip=20, limit=20)                              # page 2 (use total to know when to stop)
 bt_list(identity="<agent>", tags=["nginx"], tag_mode="all")  # filter, then page the same way
+bt_list(created_after="2026-08-25T00:00:00Z", status="all")   # recency + lifecycle windows
 bt_tags(min_count=2)                                    # the memory map: tag cloud with counts
 bt_lint()                                               # tag-hygiene report
+bt_related(post_id="<id>")                            # supersedes graph + tag neighbours
+bt_dedupe(summary="...")                             # near-duplicate check before posting (never writes)
 ```
 
 > **Paging pattern**: `bt_list` returns `{posts, total}`. Advance with
