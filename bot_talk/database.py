@@ -204,6 +204,7 @@ class BotTalkDB:
         tags: list[str],
         body: str,
         identity: str,
+        status: str = "active",
     ) -> dict:
         """Insert a new post document.
 
@@ -215,6 +216,7 @@ class BotTalkDB:
             "tags": self._canonicalize_tags(tags),
             "body": body,
             "identity": identity,
+            "status": status,
             "created_at": datetime.now(timezone.utc),
             "updated_at": None,
             "update_history": [],
@@ -234,15 +236,25 @@ class BotTalkDB:
         identity: str | None = None,
         tags: list[str] | None = None,
         tag_mode: str = "any",
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+        statuses: list[str] | None = None,
     ) -> tuple[list[dict], int]:
         """List posts with optional filtering, sorted by created_at desc.
 
         ``tag_mode`` is ``"any"`` (posts carrying ANY of ``tags``) or
-        ``"all"`` (posts carrying EVERY one of ``tags``).
+        ``"all"`` (posts carrying EVERY one of ``tags``). ``created_after``/
+        ``created_before`` bound the creation window (after inclusive, before
+        exclusive). ``statuses`` lists the post statuses to include (None =
+        no status filter).
         Returns (documents, total_count).
         """
         tags = self._expand_query_tags(tags, tag_mode)
-        filter_dict = self._build_search_filter(identity, tags, tag_mode)
+        filter_dict = self._build_search_filter(
+            identity, tags, tag_mode,
+            created_after=created_after, created_before=created_before,
+            statuses=statuses,
+        )
 
         # Count matching documents
         total = self.db.count(filter_dict) if filter_dict else self.db.count()
@@ -287,6 +299,10 @@ class BotTalkDB:
         if new_tags is not None and new_tags != doc.get("tags"):
             set_fields["tags"] = new_tags
             changes_parts.append("tags")
+
+        if update.status is not None and update.status != doc.get("status"):
+            set_fields["status"] = update.status
+            changes_parts.append("status")
 
         if update.body is not None and update.body != doc.get("body"):
             set_fields["body"] = update.body
@@ -353,6 +369,9 @@ class BotTalkDB:
         identity: str | None = None,
         tags: list[str] | None = None,
         tag_mode: str = "any",
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+        statuses: list[str] | None = None,
         with_scores: bool = False,
     ) -> list:
         """Semantic (vector) search on the ``search_text`` (summary+body) field.
@@ -363,7 +382,11 @@ class BotTalkDB:
         where score is the raw cosine similarity.
         """
         tags = self._expand_query_tags(tags, tag_mode)
-        pre_filter = self._build_search_filter(identity, tags, tag_mode)
+        pre_filter = self._build_search_filter(
+            identity, tags, tag_mode,
+            created_after=created_after, created_before=created_before,
+            statuses=statuses,
+        )
         results = (
             self.db.find(pre_filter)
             .semantic("search_text", query, limit=limit)
@@ -380,6 +403,9 @@ class BotTalkDB:
         identity: str | None = None,
         tags: list[str] | None = None,
         tag_mode: str = "any",
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+        statuses: list[str] | None = None,
         with_scores: bool = False,
     ) -> list:
         """Lexical (BM25) search across indexed text fields.
@@ -389,7 +415,11 @@ class BotTalkDB:
         Results are combined and deduplicated across fields.
         """
         tags = self._expand_query_tags(tags, tag_mode)
-        pre_filter = self._build_search_filter(identity, tags, tag_mode)
+        pre_filter = self._build_search_filter(
+            identity, tags, tag_mode,
+            created_after=created_after, created_before=created_before,
+            statuses=statuses,
+        )
 
         # Search across all text-indexed fields
         all_results: dict[str, tuple[dict, float]] = {}
@@ -428,6 +458,9 @@ class BotTalkDB:
         identity: str | None = None,
         tags: list[str] | None = None,
         tag_mode: str = "any",
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+        statuses: list[str] | None = None,
         with_scores: bool = False,
     ) -> list:
         """Hybrid search: BM25 + semantic vector search fused via RRF.
@@ -439,7 +472,11 @@ class BotTalkDB:
         so callers can judge match confidence (and detect "nothing relevant").
         """
         tags = self._expand_query_tags(tags, tag_mode)
-        pre_filter = self._build_search_filter(identity, tags, tag_mode)
+        pre_filter = self._build_search_filter(
+            identity, tags, tag_mode,
+            created_after=created_after, created_before=created_before,
+            statuses=statuses,
+        )
 
         # Get both result sets
         semantic_results = (
@@ -706,12 +743,19 @@ class BotTalkDB:
         identity: str | None = None,
         tags: list[str] | None = None,
         tag_mode: str = "any",
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+        statuses: list[str] | None = None,
     ) -> dict:
         """Build a moofile filter dict for search pre-filtering.
 
         ``tag_mode``:
           - ``"any"`` — match posts carrying ANY of the given tags (OR)
           - ``"all"`` — match posts carrying EVERY given tag (AND)
+
+        ``created_after``/``created_before`` bound ``created_at`` (after is
+        inclusive ``$gte``, before exclusive ``$lt``). ``statuses`` restricts
+        to the given lifecycle statuses (None = no status filter).
         """
         filter_dict: dict = {}
         if identity:
@@ -723,6 +767,15 @@ class BotTalkDB:
                 ]
             else:
                 filter_dict["tags"] = {"$elemMatch": {"$in": tags}}
+        if created_after is not None or created_before is not None:
+            created_range: dict = {}
+            if created_after is not None:
+                created_range["$gte"] = created_after
+            if created_before is not None:
+                created_range["$lt"] = created_before
+            filter_dict["created_at"] = created_range
+        if statuses:
+            filter_dict["status"] = {"$in": statuses}
         return filter_dict
 
 

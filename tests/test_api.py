@@ -7,6 +7,8 @@ Covers auth, CRUD, human annotations, search, stats, and edge cases.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
@@ -118,6 +120,33 @@ class TestCreatePost:
         resp = client.post(
             "/api/posts",
             json={"title": "T", "summary": "S", "tags": [], "body": "x" * 4097, "identity": "bot"},
+            headers=self.AUTH,
+        )
+        assert resp.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
+
+    def test_create_defaults_status_active(self, client: TestClient):
+        resp = client.post(
+            "/api/posts",
+            json={"title": "T", "summary": "S", "tags": [], "body": "B", "identity": "bot"},
+            headers=self.AUTH,
+        )
+        assert resp.status_code == status.HTTP_201_CREATED
+        assert resp.json()["status"] == "active"
+
+    def test_create_with_status(self, client: TestClient):
+        resp = client.post(
+            "/api/posts",
+            json={"title": "T", "summary": "S", "tags": [], "body": "B", "identity": "bot", "status": "superseded"},
+            headers=self.AUTH,
+        )
+        assert resp.status_code == status.HTTP_201_CREATED
+        assert resp.json()["status"] == "superseded"
+
+    def test_create_invalid_status_rejected(self, client: TestClient):
+        resp = client.post(
+            "/api/posts",
+            json={"title": "T", "summary": "S", "tags": [], "body": "B", "identity": "bot", "status": "archived"},
             headers=self.AUTH,
         )
         assert resp.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
@@ -250,6 +279,64 @@ class TestListPosts:
         posts = resp.json()["posts"]
         timestamps = [p["created_at"] for p in posts]
         assert timestamps == sorted(timestamps, reverse=True)
+
+    def test_list_default_hides_superseded(self, client: TestClient):
+        self._seed(client)
+        client.post(
+            "/api/posts",
+            json={**SAMPLE_POSTS[0], "title": "Retired", "status": "superseded"},
+            headers=self.AUTH,
+        )
+        data = client.get("/api/posts", headers=self.AUTH).json()
+        titles = [p["title"] for p in data["posts"]]
+        assert "Retired" not in titles
+        assert data["total"] == 4
+
+    def test_list_status_all_includes_superseded(self, client: TestClient):
+        self._seed(client)
+        client.post(
+            "/api/posts",
+            json={**SAMPLE_POSTS[0], "title": "Retired", "status": "superseded"},
+            headers=self.AUTH,
+        )
+        data = client.get("/api/posts?status=all", headers=self.AUTH).json()
+        titles = [p["title"] for p in data["posts"]]
+        assert "Retired" in titles
+        assert data["total"] == 5
+
+    def test_list_status_superseded_only(self, client: TestClient):
+        client.post(
+            "/api/posts",
+            json={**SAMPLE_POSTS[0], "title": "Retired", "status": "superseded"},
+            headers=self.AUTH,
+        )
+        data = client.get("/api/posts?status=superseded", headers=self.AUTH).json()
+        assert data["total"] == 1
+        assert data["posts"][0]["title"] == "Retired"
+
+    def test_list_date_range_filter(self, client: TestClient):
+        self._seed(client)
+        now = datetime.now(timezone.utc)
+        resp = client.get(
+            "/api/posts",
+            params={
+                "created_after": (now - timedelta(minutes=1)).isoformat(),
+                "created_before": (now + timedelta(minutes=1)).isoformat(),
+            },
+            headers=self.AUTH,
+        )
+        assert resp.status_code == status.HTTP_200_OK
+        assert resp.json()["total"] == 4
+
+    def test_list_invalid_date_422(self, client: TestClient):
+        self._seed(client)
+        resp = client.get("/api/posts?created_after=notadate", headers=self.AUTH)
+        assert resp.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
+    def test_list_invalid_status_422(self, client: TestClient):
+        self._seed(client)
+        resp = client.get("/api/posts?status=archived", headers=self.AUTH)
+        assert resp.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
 class TestTags:
@@ -450,6 +537,25 @@ class TestUpdatePost:
             headers=self.AUTH,
         )
         assert resp.json()["human_annotation"] == "A note from human"
+
+    def test_update_status(self, client: TestClient):
+        pid = self._create(client)
+        resp = client.put(
+            f"/api/posts/{pid}",
+            json={"identity": "bot_b", "status": "superseded"},
+            headers=self.AUTH,
+        )
+        assert resp.status_code == status.HTTP_200_OK
+        assert resp.json()["status"] == "superseded"
+
+    def test_update_invalid_status_422(self, client: TestClient):
+        pid = self._create(client)
+        resp = client.put(
+            f"/api/posts/{pid}",
+            json={"identity": "bot_b", "status": "archived"},
+            headers=self.AUTH,
+        )
+        assert resp.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
 class TestDeletePost:
@@ -676,6 +782,103 @@ class TestSearch:
     def test_search_invalid_mode(self, client: TestClient):
         resp = client.get("/api/search?q=test&mode=invalid", headers=self.AUTH)
         assert resp.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
+    def test_search_finds_and_labels_superseded(self, client: TestClient):
+        self._seed(client)
+        client.post(
+            "/api/posts",
+            json={**SAMPLE_POSTS[1], "title": "Neural Retired", "status": "superseded"},
+            headers=self.AUTH,
+        )
+        data = client.get("/api/search?q=neural&mode=lexical", headers=self.AUTH).json()
+        superseded = [
+            r["post"] for r in data["results"] if r["post"]["status"] == "superseded"
+        ]
+        assert superseded  # search finds superseded by default (and labels via status)
+        assert "Neural Retired" in [p["title"] for p in superseded]
+
+    def test_search_status_filter(self, client: TestClient):
+        self._seed(client)
+        client.post(
+            "/api/posts",
+            json={**SAMPLE_POSTS[1], "title": "Neural Retired", "status": "superseded"},
+            headers=self.AUTH,
+        )
+        data = client.get(
+            "/api/search?q=neural&mode=lexical&status=active", headers=self.AUTH
+        ).json()
+        assert data["results"]
+        for r in data["results"]:
+            assert r["post"]["status"] == "active"
+
+    def test_search_tags_browse_hides_superseded(self, client: TestClient):
+        self._seed(client)
+        client.post(
+            "/api/posts",
+            json={**SAMPLE_POSTS[0], "title": "Retired AI", "tags": ["ai"], "status": "superseded"},
+            headers=self.AUTH,
+        )
+        data = client.get("/api/search?tags=ai", headers=self.AUTH).json()
+        titles = [r["post"]["title"] for r in data["results"]]
+        assert "Retired AI" not in titles
+
+
+# ======================== Dedupe / upsert Tests ========================
+
+
+class TestDedupe:
+    """POST /api/dedupe — near-duplicate detection for the upsert habit."""
+
+    AUTH = {"Authorization": "Bearer test-api-key-12345"}
+
+    def test_dedupe_requires_summary(self, client: TestClient):
+        resp = client.post("/api/dedupe", json={}, headers=self.AUTH)
+        assert resp.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
+    def test_dedupe_flags_exact_duplicate(self, client_with_embed: TestClient):
+        client_with_embed.post("/api/posts", json={**SAMPLE_POSTS[0]}, headers=self.AUTH)
+        resp = client_with_embed.post(
+            "/api/dedupe",
+            json={"summary": SAMPLE_POSTS[0]["summary"]},
+            headers=self.AUTH,
+        )
+        assert resp.status_code == status.HTTP_200_OK
+        data = resp.json()
+        assert data["recommendation"] == "update"
+        assert data["best_match"] == data["results"][0]["post"]["id"]
+        top = data["results"][0]
+        assert top["likely_duplicate"] is True
+        assert top["verdict"] == "duplicate"
+        assert top["post"]["title"] == "Machine Learning Basics"
+
+    def test_dedupe_recommends_create_for_unrelated(self, client_with_embed: TestClient):
+        client_with_embed.post("/api/posts", json={**SAMPLE_POSTS[0]}, headers=self.AUTH)
+        resp = client_with_embed.post(
+            "/api/dedupe",
+            json={"summary": "quantum decoherence in superconducting qubit error correction"},
+            headers=self.AUTH,
+        )
+        assert resp.status_code == status.HTTP_200_OK
+        data = resp.json()
+        # Not a confident duplicate — at worst 'review', ideally 'create'.
+        assert data["recommendation"] != "update"
+        assert all(r["likely_duplicate"] is False for r in data["results"])
+
+    def test_dedupe_scopes_by_identity(self, client_with_embed: TestClient):
+        client_with_embed.post("/api/posts", json={**SAMPLE_POSTS[0]}, headers=self.AUTH)
+        client_with_embed.post(
+            "/api/posts",
+            json={**SAMPLE_POSTS[0], "title": "Other Bot Copy", "identity": "other_bot"},
+            headers=self.AUTH,
+        )
+        resp = client_with_embed.post(
+            "/api/dedupe",
+            json={"summary": SAMPLE_POSTS[0]["summary"], "identity": "pengy_bot"},
+            headers=self.AUTH,
+        )
+        data = resp.json()
+        assert data["results"]
+        assert all(r["post"]["identity"] == "pengy_bot" for r in data["results"])
 
 
 # ======================== Stats & Health Tests ========================

@@ -18,6 +18,7 @@ Provides:
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -26,6 +27,9 @@ from .auth import verify_api_key
 from .database import BotTalkDB, get_db
 from .analytics import get_analytics
 from .models import (
+    DedupeRequest,
+    DedupeResponse,
+    DedupeResult,
     HumanAnnotationUpdate,
     PostCreate,
     PostListResponse,
@@ -37,6 +41,7 @@ from .models import (
     TagLintResponse,
     TagListResponse,
     UpdateRecord,
+    VALID_STATUSES,
     doc_to_response,
 )
 
@@ -53,6 +58,51 @@ router = APIRouter(prefix="/api", tags=["BotTalk"])
 def _get_db() -> BotTalkDB:
     """Dependency: get the database singleton."""
     return get_db()
+
+
+def _parse_datetime(value: Optional[str], param: str) -> Optional[datetime]:
+    """Parse an ISO-8601 query param into an aware UTC datetime (or None)."""
+    if value is None:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Invalid '{param}': must be ISO-8601 (e.g. 2026-08-25T00:00:00Z).",
+        )
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _parse_status(value: Optional[str], default_active: bool) -> Optional[list[str]]:
+    """Parse a ``status`` query param into the statuses to include.
+
+    ``default_active`` selects the absent-parameter default:
+      - True  -> no status filter (search finds superseded posts, labelled)
+      - False -> only ``active`` (list/browse hides superseded/deprecated)
+
+    ``all`` (or no valid tokens) clears the filter. Invalid tokens → 422.
+    """
+    if value is None:
+        return ["active"] if not default_active else None
+    statuses: list[str] = []
+    for raw in value.split(","):
+        s = raw.strip().lower()
+        if not s:
+            continue
+        if s == "all":
+            return None
+        if s not in VALID_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Invalid status '{s}'. Valid: {', '.join(VALID_STATUSES)}, all.",
+            )
+        statuses.append(s)
+    if not statuses:
+        return ["active"] if not default_active else None
+    return statuses
 
 
 # ======================== Posts CRUD ========================
@@ -80,6 +130,7 @@ async def create_post(
         tags=body.tags,
         body=body.body,
         identity=body.identity,
+        status=body.status,
     )
     get_analytics().record("memory_added", post_id=doc.get("_id"), tags=doc.get("tags"), created_at=doc.get("created_at"))
     return doc_to_response(doc)
@@ -104,6 +155,13 @@ async def create_post(
 SIGNAL_CONFIDENT = 0.55
 SIGNAL_FLOOR = 0.45
 
+# Dedupe verdict thresholds (semantic cosine against the candidate text).
+# Built on top of semantic search — a true same-memory post scores well above
+# search's confidence floor. ``duplicate`` (>= .70) is safe to update instead of
+# create; ``possible`` (>= .55) is related and worth a look.
+DEDUPE_DUPLICATE = 0.70
+DEDUPE_POSSIBLE = 0.55
+
 
 @router.get(
     "/posts",
@@ -122,17 +180,36 @@ async def list_posts(
         pattern="^(any|all)$",
         description="any = posts with any listed tag, all = posts with every listed tag",
     ),
+    created_after: Optional[str] = Query(
+        None, description="Only posts created at/after this ISO-8601 instant (inclusive)"
+    ),
+    created_before: Optional[str] = Query(
+        None, description="Only posts created before this ISO-8601 instant (exclusive)"
+    ),
+    post_status: Optional[str] = Query(
+        None,
+        alias="status",
+        description=(
+            "Comma-separated statuses to include: active, superseded, deprecated, "
+            "or 'all' for everything. Default: active (hides superseded/deprecated)."
+        ),
+    ),
     db: BotTalkDB = Depends(_get_db),
     _=Depends(verify_api_key),
 ):
     """List posts sorted by creation time (newest first).
 
-    Optional filters: ``identity`` (exact match) and ``tags`` (with
-    ``tag_mode`` any/all semantics).
+    Optional filters: ``identity`` (exact match), ``tags`` (with ``tag_mode``
+    any/all semantics), a ``created_at`` window via ``created_after``/
+    ``created_before``, and ``status``.  By default only ``active`` posts are
+    listed — pass ``status=all`` to include superseded/deprecated.
     """
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
     docs, total = db.list_posts(
-        skip=skip, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode
+        skip=skip, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode,
+        created_after=_parse_datetime(created_after, "created_after"),
+        created_before=_parse_datetime(created_before, "created_before"),
+        statuses=_parse_status(post_status, default_active=False),
     )
     return PostListResponse(
         posts=[doc_to_response(d) for d in docs],
@@ -305,6 +382,21 @@ async def search_posts(
         pattern="^(any|all)$",
         description="any = match posts carrying any listed tag, all = every listed tag",
     ),
+    created_after: Optional[str] = Query(
+        None, description="Only posts created at/after this ISO-8601 instant (inclusive)"
+    ),
+    created_before: Optional[str] = Query(
+        None, description="Only posts created before this ISO-8601 instant (exclusive)"
+    ),
+    post_status: Optional[str] = Query(
+        None,
+        alias="status",
+        description=(
+            "Comma-separated statuses to include: active, superseded, deprecated, "
+            "or 'all' (default for search — superseded posts are returned and "
+            "labelled). Tag-only browse defaults to 'active'."
+        ),
+    ),
     db: BotTalkDB = Depends(_get_db),
     _=Depends(verify_api_key),
     x_bottalk_session: Optional[str] = Header(None),
@@ -327,6 +419,9 @@ async def search_posts(
     """
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
 
+    created_after_dt = _parse_datetime(created_after, "created_after")
+    created_before_dt = _parse_datetime(created_before, "created_before")
+
     if not q and not tag_list:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -336,7 +431,9 @@ async def search_posts(
     # Tags-only browse: every post carrying the tags, newest first, paged.
     if q is None:
         docs, total = db.list_posts(
-            skip=skip, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode
+            skip=skip, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode,
+            created_after=created_after_dt, created_before=created_before_dt,
+            statuses=_parse_status(post_status, default_active=False),
         )
         get_analytics().record("memory_search", query=q, tags=tag_list, session_id=x_bottalk_session, mode="tags", result_count=total, result_ids=[doc.get("_id") for doc in docs])
         search_results = [
@@ -354,20 +451,24 @@ async def search_posts(
             query="",
         )
 
+    statuses = _parse_status(post_status, default_active=True)
     if mode == "semantic":
         results = db.search_semantic(
             q, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode,
-            with_scores=True,
+            created_after=created_after_dt, created_before=created_before_dt,
+            statuses=statuses, with_scores=True,
         )
     elif mode == "lexical":
         results = db.search_lexical(
             q, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode,
-            with_scores=True,
+            created_after=created_after_dt, created_before=created_before_dt,
+            statuses=statuses, with_scores=True,
         )
     else:
         results = db.search_hybrid(
             q, limit=limit, identity=identity, tags=tag_list, tag_mode=tag_mode,
-            with_scores=True,
+            created_after=created_after_dt, created_before=created_before_dt,
+            statuses=statuses, with_scores=True,
         )
 
     get_analytics().record("memory_search", query=q, tags=tag_list, session_id=x_bottalk_session, mode=mode, result_count=len(results), result_ids=[doc.get("_id") for doc, _, _ in results])
@@ -463,6 +564,71 @@ async def search_posts(
         examined=n_examined,
         surfaced=k_surfaced,
         advisory=advisory,
+    )
+
+
+# ======================== Dedupe / upsert ========================
+
+
+@router.post(
+    "/dedupe",
+    response_model=DedupeResponse,
+    summary="Check a would-be post for near-duplicates (upsert habit)",
+)
+async def dedupe(
+    body: DedupeRequest,
+    db: BotTalkDB = Depends(_get_db),
+    _=Depends(verify_api_key),
+):
+    """Recommend-only near-duplicate check for the 'update, don't duplicate' habit.
+
+    Embed the candidate summary (+ body) and run it through semantic search.
+    Returns the closest existing posts with their absolute cosine and a verdict:
+
+    - ``duplicate`` (cosine >= 0.70) — an existing post already covers this;
+      recommend updating that post instead of creating.
+    - ``possible`` (cosine >= 0.55) — related; review before deciding.
+    - ``distinct`` — nothing close; safe to create a new post.
+
+    Never writes.  ``tags``/``identity`` optionally narrow the candidate pool.
+    """
+    query = body.summary
+    if body.body:
+        query = f"{query}\n\n{body.body}"
+    results = db.search_semantic(
+        query, limit=body.limit, identity=body.identity, tags=body.tags,
+        tag_mode="any", with_scores=True,
+    )
+
+    items: list[DedupeResult] = []
+    for doc, _score, leg in results:
+        cos = leg.get("semantic")
+        if cos is None:
+            verdict, likely, cosine = "distinct", False, None
+        elif cos >= DEDUPE_DUPLICATE:
+            verdict, likely, cosine = "duplicate", True, cos
+        elif cos >= DEDUPE_POSSIBLE:
+            verdict, likely, cosine = "possible", False, cos
+        else:
+            verdict, likely, cosine = "distinct", False, cos
+        items.append(DedupeResult(
+            post=doc_to_response(doc),
+            cosine=round(cosine, 4) if cosine is not None else None,
+            verdict=verdict,
+            likely_duplicate=likely,
+        ))
+
+    dupes = [r for r in items if r.verdict == "duplicate"]
+    poss = [r for r in items if r.verdict == "possible"]
+    if dupes:
+        recommendation, best = "update", dupes[0].post.id
+    elif poss:
+        recommendation, best = "review", poss[0].post.id
+    else:
+        recommendation, best = "create", None
+
+    return DedupeResponse(
+        results=items, recommendation=recommendation, best_match=best
     )
 
 

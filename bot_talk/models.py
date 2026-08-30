@@ -12,6 +12,13 @@ from typing import Annotated, Optional
 from pydantic import BaseModel, Field, field_validator
 
 
+VALID_STATUSES: tuple[str, ...] = ("active", "superseded", "deprecated")
+"""Allowed lifecycle states for a memory. ``active`` is the default new posts
+get; ``superseded``/``deprecated`` mark memories that should not be acted on
+(and are hidden from neutral listing by default, but still findable + labelled
+by search)."""
+
+
 # ---------------------------------------------------------------------------
 # Internal document model (what's stored in moofile)
 # ---------------------------------------------------------------------------
@@ -51,6 +58,10 @@ class PostDocument(BaseModel):
         ..., min_length=1, max_length=200,
         description="Bot identity (name or hostname)",
     )
+    status: str = Field(
+        "active",
+        description=f"Lifecycle status: one of {', '.join(VALID_STATUSES)}",
+    )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="ISO-8601 creation timestamp",
@@ -82,6 +93,10 @@ class PostCreate(BaseModel):
         ..., min_length=1, max_length=200,
         description="Bot identity (name or hostname)",
     )
+    status: str = Field(
+        "active",
+        description=f"Lifecycle status: one of {', '.join(VALID_STATUSES)}",
+    )
 
     @field_validator("body")
     @classmethod
@@ -98,6 +113,14 @@ class PostCreate(BaseModel):
         for tag in v:
             if len(tag) > 50:
                 raise ValueError(f"tag too long: '{tag[:20]}...' (max 50 chars)")
+        return v
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: str) -> str:
+        """Restrict status to the known lifecycle set."""
+        if v not in VALID_STATUSES:
+            raise ValueError(f"status must be one of {', '.join(VALID_STATUSES)}")
         return v
 
 
@@ -117,6 +140,9 @@ class PostUpdate(BaseModel):
     tags: Optional[list[str]] = Field(None)
     body: Optional[str] = Field(None, max_length=4096)
     human_annotation: Optional[str] = Field(None, max_length=4096)
+    status: Optional[str] = Field(
+        None, description=f"Lifecycle status: one of {', '.join(VALID_STATUSES)}"
+    )
 
     @field_validator("body")
     @classmethod
@@ -125,10 +151,42 @@ class PostUpdate(BaseModel):
             raise ValueError("body exceeds 4 KB limit (UTF-8 encoded)")
         return v
 
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: Optional[str]) -> Optional[str]:
+        """Restrict status to the known lifecycle set."""
+        if v is not None and v not in VALID_STATUSES:
+            raise ValueError(f"status must be one of {', '.join(VALID_STATUSES)}")
+        return v
+
 
 class HumanAnnotationUpdate(BaseModel):
     """Request to add/edit the human annotation on a memory."""
     annotation: str = Field(..., max_length=4096, description="Human annotation text")
+
+
+class DedupeRequest(BaseModel):
+    """Request to check a would-be post for near-duplicates.
+
+    The upsert habit: before posting, run a respect text against the corpus and
+    see whether an existing post already covers it — so you update instead of
+    duplicating.  ``summary`` is the primary match text (+ ``body`` if given).
+    ``tags``/``identity`` optionally narrow the search to the same topic/author.
+    """
+    summary: str = Field(..., min_length=1, max_length=1000, description="Candidate summary text")
+    title: Optional[str] = Field(None, max_length=200, description="Candidate title (for display/recommendation)")
+    body: Optional[str] = Field(None, max_length=4096, description="Candidate body text")
+    tags: Optional[list[str]] = Field(None, description="Narrow dedupe to posts carrying any of these tags")
+    identity: Optional[str] = Field(None, max_length=200, description="Narrow dedupe to this bot identity")
+    limit: int = Field(5, ge=1, le=20, description="Max candidates to return")
+
+    @field_validator("body")
+    @classmethod
+    def body_size_limit(cls, v: Optional[str]) -> Optional[str]:
+        """Enforce the 4 KB body limit in bytes."""
+        if v is not None and len(v.encode("utf-8")) > 4096:
+            raise ValueError("body exceeds 4 KB limit (UTF-8 encoded)")
+        return v
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +201,7 @@ class PostResponse(BaseModel):
     tags: list[str]
     body: str
     identity: str
+    status: str = Field("active", description="Lifecycle status")
     created_at: datetime
     updated_at: Optional[datetime] = None
     update_history: list[UpdateRecord] = []
@@ -246,6 +305,31 @@ class PostListResponse(BaseModel):
     limit: int = Field(20, description="Limit used")
 
 
+class DedupeResult(BaseModel):
+    """A single near-duplicate candidate."""
+    post: PostResponse
+    cosine: Optional[float] = Field(
+        None, description="Absolute semantic cosine similarity in [0,1]"
+    )
+    verdict: str = Field(
+        ..., description="duplicate | possible | distinct"
+    )
+    likely_duplicate: bool = Field(
+        False, description="True when verdict == 'duplicate'"
+    )
+
+
+class DedupeResponse(BaseModel):
+    """Result of a dedupe check with an upsert recommendation."""
+    results: list[DedupeResult] = Field(default_factory=list)
+    recommendation: str = Field(
+        ..., description="update | review | create"
+    )
+    best_match: Optional[str] = Field(
+        None, description="Post id of the closest match when recommendation is update/review"
+    )
+
+
 class TagCount(BaseModel):
     """A single tag with the number of posts carrying it."""
     tag: str = Field(..., description="Tag name")
@@ -325,6 +409,7 @@ def doc_to_response(doc: dict) -> PostResponse:
         "tags": doc.get("tags", []),
         "body": doc.get("body", ""),
         "identity": doc.get("identity", ""),
+        "status": doc.get("status", "active"),
         "created_at": doc.get("created_at"),
         "updated_at": doc.get("updated_at"),
         "update_history": [

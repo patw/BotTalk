@@ -4,7 +4,7 @@ Tests for BotTalk database layer — CRUD, search, human annotations.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -75,6 +75,19 @@ class TestCreatePost:
             title="T", summary="S", tags=[], body="B", identity="bot"
         )
         assert doc["updated_at"] is None
+
+    def test_create_defaults_status_active(self, test_db: BotTalkDB):
+        doc = test_db.create_post(
+            title="T", summary="S", tags=[], body="B", identity="bot"
+        )
+        assert doc["status"] == "active"
+
+    def test_create_with_custom_status(self, test_db: BotTalkDB):
+        doc = test_db.create_post(
+            title="T", summary="S", tags=[], body="B", identity="bot",
+            status="deprecated",
+        )
+        assert doc["status"] == "deprecated"
 
 
 class TestGetPost:
@@ -177,6 +190,58 @@ class TestListPosts:
         docs, total = test_db.list_posts(identity="nonexistent_bot")
         assert total == 0
         assert docs == []
+
+    def test_list_status_filter(self, test_db: BotTalkDB):
+        """statuses=None (no filter) vs statuses=[...] (restrict)."""
+        self._seed(test_db)  # 4 active posts
+        test_db.create_post(
+            **{**SAMPLE_POSTS[0], "title": "Retired", "status": "superseded"}
+        )
+        docs, total = test_db.list_posts(statuses=["active"])
+        assert total == 4
+        assert all(d["status"] == "active" for d in docs)
+
+        docs, total = test_db.list_posts(statuses=["superseded"])
+        assert total == 1
+        assert docs[0]["title"] == "Retired"
+
+        docs, total = test_db.list_posts(statuses=None)
+        assert total == 5
+
+    def test_list_date_range(self, test_db: BotTalkDB):
+        """created_after is inclusive, created_before is exclusive."""
+        for day in (24, 25, 26):
+            d = test_db.create_post(
+                **{**SAMPLE_POSTS[0], "title": f"Day {day}"}
+            )
+            test_db.db.update_one(
+                {"_id": d["_id"]},
+                set={"created_at": datetime(2026, 8, day, tzinfo=timezone.utc)},
+            )
+        # after = noon on the 24th (inclusive) → excludes Day 24 (00:00) but
+        # includes Day 25; before = Day 26 00:00 (exclusive) → excludes Day 26.
+        docs, total = test_db.list_posts(
+            created_after=datetime(2026, 8, 24, 12, tzinfo=timezone.utc),
+            created_before=datetime(2026, 8, 26, tzinfo=timezone.utc),
+        )
+        assert total == 1
+        assert docs[0]["title"] == "Day 25"
+
+    def test_list_date_range_with_identity(self, test_db: BotTalkDB):
+        d = test_db.create_post(
+            **{**SAMPLE_POSTS[0], "title": "Inside"}
+        )
+        test_db.db.update_one(
+            {"_id": d["_id"]},
+            set={"created_at": datetime(2026, 8, 15, tzinfo=timezone.utc)},
+        )
+        test_db.create_post(**{**SAMPLE_POSTS[1], "title": "Now", "identity": "other"})
+        docs, total = test_db.list_posts(
+            identity="pengy_bot",
+            created_after=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        )
+        assert total == 1
+        assert docs[0]["title"] == "Inside"
 
 
 class TestListTags:
@@ -427,6 +492,15 @@ class TestUpdatePost:
         assert updated["summary"] == "New S"
         assert updated["tags"] == ["x", "y"]
         assert "title, summary, tags" in updated["update_history"][0]["changes"]
+
+    def test_update_status(self, test_db: BotTalkDB):
+        pid = self._create(test_db)
+        updated = test_db.update_post(pid, PostUpdate(identity="bot_b", status="superseded"))
+        assert updated is not None
+        assert updated["status"] == "superseded"
+        doc = test_db.get_post(pid)
+        assert doc["status"] == "superseded"
+        assert "status" in updated["update_history"][0]["changes"]
 
     def test_update_human_annotation(self, test_db: BotTalkDB):
         pid = self._create(test_db)
