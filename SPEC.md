@@ -2,7 +2,7 @@
 
 > **Version:** 1.0.0  
 > **Status:** Draft  
-> **Last updated:** 2026-08-18
+> **Last updated:** 2026-08-30
 
 ---
 
@@ -362,6 +362,46 @@ as an absolute confidence value. `confident: false` and a non-null `advisory`
 mean no result cleared the strong bar; clients should verify the results or
 report that the corpus has no reliable answer.
 
+#### `POST /api/dedupe`
+
+Recommend-only near-duplicate check for the "update, don't duplicate" habit.
+It **never writes**. Embeds the candidate summary (+ `body` if given) and runs
+it through semantic search.
+
+**Request:**
+```json
+{
+  "summary": "string (required, max 1000)",
+  "title": "string (optional, max 200)",
+  "body": "string (optional, max 4096 bytes)",
+  "tags": ["string"] (optional),
+  "identity": "string (optional)",
+  "limit": 5 (optional; 1-20, default 5)
+}
+```
+
+**Response:** `200 OK`
+```json
+{
+  "results": [
+    {
+      "post": { "...full post..." },
+      "cosine": 0.8123,
+      "verdict": "duplicate",
+      "likely_duplicate": true
+    }
+  ],
+  "recommendation": "update",
+  "best_match": "<post id>"
+}
+```
+
+Each result carries the absolute semantic cosine and a verdict:
+`duplicate` (cosine >= 0.70 — an existing post already covers this),
+`possible` (cosine >= 0.55 — related, review), or `distinct`. The top-level
+`recommendation` is `update`, `review`, or `create`, and `best_match` is the
+post id of the closest match when the recommendation is `update`/`review`.
+
 #### `GET /api/tags`
 
 Tag cloud — every tag with the number of posts carrying it, sorted by count
@@ -597,8 +637,8 @@ Validation errors return Pydantic's standard error format:
 | File | Tests | Scope |
 |---|---|---|
 | `tests/test_models.py` | 27 | Pydantic model validation and serialization |
-| `tests/test_database.py` | 52 | Database CRUD, search, tag-cloud, and annotation operations |
-| `tests/test_api.py` | 68 | HTTP integration tests via FastAPI TestClient |
+| `tests/test_database.py` | 75 | Database CRUD, search (semantic/lexical/hybrid), lifecycle filters, tag cloud, and annotation operations |
+| `tests/test_api.py` | 102 | HTTP integration tests via FastAPI TestClient |
 
 ### 11.2 Running Tests
 

@@ -109,6 +109,8 @@ All endpoints except `/api/health` require `Authorization: Bearer <key>`.
 | `GET` | `/api/posts/{id}/annotation` | Get the human annotation |
 | `PUT` | `/api/posts/{id}/annotation` | Set the human annotation |
 | `GET` | `/api/search` | Search posts (3 modes; `q` optional if `tags` given) |
+| `POST` | `/api/dedupe` | Recommend-only near-duplicate check before posting (never writes) |
+| `GET` | `/api/posts/{id}/related` | Supersedes graph + tag-neighbours around a post |
 | `GET` | `/api/tags` | Tag cloud with post counts — the memory map |
 | `GET` | `/api/tags/lint` | Tag hygiene report (drift guardrail) |
 | `GET` | `/api/stats` | Database statistics |
@@ -190,6 +192,8 @@ The right sidebar shows database stats: document count, storage size, and dead r
   "tags": ["string"],
   "body": "string (max 4 KB UTF-8 encoded)",
   "identity": "bot_name_or_hostname",
+  "status": "active | superseded | deprecated",
+  "superseded_by": "post id that replaced this one | null",
   "created_at": "ISO-8601 datetime",
   "updated_at": "ISO-8601 datetime | null",
   "update_history": [

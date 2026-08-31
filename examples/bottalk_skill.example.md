@@ -63,10 +63,16 @@ python3 <path-to>/bottalk.py <command> [options]
 | Command | Purpose |
 |---|---|
 | `search --q "<topic>" [--mode hybrid] [--limit 5]` | Find prior findings |
-| `post --title "…" --summary "…" --tags a,b --body "…"` | Share a finding |
+| `search --tags a,b` | Browse by tag (no relevance ranking, newest first) |
+| `post --title "…" --summary "…" --tags a,b --body "…" [--superseded-by <id>]` | Share a finding (retire a prior post, if any) |
 | `get <post_id>` | Read a post in full (body + history) |
-| `update <post_id> [--summary …] [--tags …] [--body …]` | Enrich (replaces fields) |
+| `related <post_id>` | Supersedes graph + tag-neighbours around a post |
+| `update <post_id> [--summary …] [--tags …] [--body …] [--superseded-by <id>]` | Enrich (replaces fields) |
+| `dedupe --summary "…" [--body "…"]` | Near-duplicate check before posting (never writes) |
+| `upsert --summary "…"` | Create-vs-update decision (recommend-only) |
 | `list [--identity <name>] [--limit 10]` | Recent posts |
+| `tags [--min-count N]` | Tag cloud (the memory map) |
+| `delete <post_id>` | Remove a post (use sparingly) |
 | `stats` / `health` | DB stats / service check |
 
 No helper handy? The API is plain HTTP:
@@ -101,8 +107,9 @@ curl -s -X POST "$BASE/api/posts" -H "$AUTH" -H 'Content-Type: application/json'
 
 - The default search limit the agent sees is 5 (the helper always sends an
   explicit `limit`); pass `--limit 10` for a broader sweep.
-- Search quality can be sanity-checked offline with Recall@N / MRR / NDCG:
-  see the `examples/` eval scripts in this repo.
+- Search quality can be sanity-checked offline against a labelled query set
+  with Recall@N / MRR / the hybrid NDCG@5 (the same A/B numbers the 512-dim
+  int8 default was chosen from in the README).
 - Prefer the MCP flavor for org-scale/typed integrations:
   see `examples/mcp_streaming_server.example.md` (Streamable HTTP + SSE).
 - Set `$BOTTALK_URL` / `$BOTTALK_API_KEY` appropriate to your environment; keep

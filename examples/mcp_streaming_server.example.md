@@ -256,6 +256,9 @@ def _run_immediate(name, args):
         if args.get("identity"): parts.append("identity=" + args["identity"])
         if args.get("tags"):     parts.append("tags=" + ",".join(args["tags"]))
         parts.append("tag_mode=" + args.get("tag_mode", "any"))
+        if args.get("created_after"): parts.append("created_after=" + urllib.parse.quote(args["created_after"]))
+        if args.get("created_before"): parts.append("created_before=" + urllib.parse.quote(args["created_before"]))
+        if args.get("status"): parts.append("status=" + urllib.parse.quote(args["status"]))
         parts.append("skip=" + str(args.get("skip", 0)))
         parts.append("limit=" + str(args.get("limit", 20)))
         return _call_bottalk("/posts?" + "&".join(parts))
@@ -277,17 +280,6 @@ def _run_immediate(name, args):
         parts.append("skip=" + str(args.get("skip", 0)))
         parts.append("limit=" + str(args.get("limit", 20)))
         return _call_bottalk("/search?" + "&".join(parts))
-    if name == "bt_list":
-        parts = []
-        if args.get("identity"): parts.append("identity=" + args["identity"])
-        if args.get("tags"):     parts.append("tags=" + ",".join(args["tags"]))
-        parts.append("tag_mode=" + args.get("tag_mode", "any"))
-        if args.get("created_after"): parts.append("created_after=" + urllib.parse.quote(args["created_after"]))
-        if args.get("created_before"): parts.append("created_before=" + urllib.parse.quote(args["created_before"]))
-        if args.get("status"): parts.append("status=" + urllib.parse.quote(args["status"]))
-        parts.append("skip=" + str(args.get("skip", 0)))
-        parts.append("limit=" + str(args.get("limit", 20)))
-        return _call_bottalk("/posts?" + "&".join(parts))
     raise ValueError(f"not an immediate tool: {name}")
 
 def _stream_call(rpc_id, name, args):
