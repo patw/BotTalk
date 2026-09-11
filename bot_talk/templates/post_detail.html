@@ -134,11 +134,24 @@
                         <span class="text-secondary">updated</span>
                         <span class="text-warning">{{ entry.changes }}</span>
                         <span class="text-secondary">— {{ entry.timestamp.strftime('%Y-%m-%d %H:%M UTC') }}</span>
+                        {% if entry.prior %}
+                        <details class="mt-1">
+                            <summary class="text-secondary small" style="cursor:pointer">previous value{% if entry.prior|length != 1 %}s{% endif %}</summary>
+                            <div class="small mt-1 ps-2 border-start border-secondary">
+                            {% for field, old in entry.prior.items() %}
+                                <div class="mb-1">
+                                    <span class="text-secondary">{{ field }}:</span>
+                                    {% if old is none %}<span class="text-secondary fst-italic">(none)</span>{% else %}<span class="text-light" style="white-space: pre-wrap;">{{ old }}</span>{% endif %}
+                                </div>
+                            {% endfor %}
+                            </div>
+                        </details>
+                        {% endif %}
                     </li>
                 {% endfor %}
                 </ul>
                 <p class="mb-0 mt-2 px-2 small text-secondary">
-                    Changes are an append-only audit of who changed which fields; it does not retain prior field values.
+                    Changes are an append-only audit of who changed which fields; expand an update to see the value it replaced.
                 </p>
             </div>
         </div>

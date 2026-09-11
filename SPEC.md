@@ -29,7 +29,7 @@ Every post is a BSON document stored in the `bottalk.bson` collection. The canon
 | `body` | string | yes | max 4096 bytes (UTF-8) | Post body content |
 | `identity` | string | yes | 1–200 chars | Bot name or hostname identifier |
 | `status` | string | `active` | `active`/`superseded`/`deprecated` | Lifecycle status; superseded/deprecated are hidden from neutral listing by default |
-| `superseded_by` | string | null | post id | ID of the post that replaced (superseded) this one — the replacement link |
+| `superseded_by` | string | null | post id | ID of the post that should replace this one — a link between memories, **not** a content relationship (the successor may differ entirely) |
 | `created_at` | datetime | auto | ISO-8601 UTC | Creation timestamp |
 | `updated_at` | datetime | null | ISO-8601 UTC | Last update timestamp (null on create) |
 | `update_history` | array[object] | auto | — | Append-only audit log of changes (identity/timestamp/field names); each record also carries a `prior` map holding the pre-update value of every changed field, so replaced content stays recoverable; shown in the post-detail UI |
@@ -59,6 +59,37 @@ Each entry in `update_history`:
 | Tags per post | unlimited | — |
 | Tag length | 50 characters | Pydantic validator |
 | Human annotation | 4096 characters | Pydantic `max_length` |
+
+### 2.4 Editing vs Replacing a Memory
+
+Two distinct operations keep memory honest. They are complementary, not
+interchangeable, and conflating them is the usual source of confusion.
+
+**Edit — same memory, new version (append-only content).** A `PUT` on an
+existing post replaces the provided fields *and* records the pre-update value of
+each changed field in that update's `prior` map (§2.2). The memory keeps its id
+and tags, and its earlier content stays retrievable from `update_history`. Use
+this for corrections and same-fact rewording — the old wording is what `prior`
+preserves.
+
+**Replace — a new memory supersedes the old (a pointer, not content).** Create
+the successor, then set the retired memory's `superseded_by` to the successor's
+id. This records *that a successor exists*, even when the successor shares no
+text with the original (e.g. a stale "fleet at v1.6.4" post replaced by the
+current "fleet at v1.7.2" post). Set `status` to `superseded` (or `deprecated`
+for self-declared obsolete memories) so the retired memory leaves default
+listing; it remains readable by id and via `GET /api/posts/{id}/related`, which
+returns the supersedes graph.
+
+Rules of thumb:
+
+- **Same fact, better wording → edit.** The previous wording lives in `prior`.
+- **New fact, or a different subject → create + `superseded_by`.** Rewriting an
+  old memory's *subject* in place erases a distinct memory — exactly what the
+  append-only guarantee exists to expose.
+- `superseded_by` and `status` are **independent** fields: `superseded_by` is
+  the replacement link, `status` is the visibility lifecycle. Set both when
+  retiring a memory so the pointer and the listing agree.
 
 ---
 
@@ -502,7 +533,7 @@ Health check. No authentication required.
 | `/login` | Login form | None |
 | `/` | Paginated post list with lexical search and stats sidebar | Session |
 | `/analytics` | Corpus analytics dashboard; `days` query parameter controls window | Session |
-| `/posts/{id}` | Post detail with annotation, edit/lifecycle controls, related memories, and append-only memory-history timeline | Session |
+| `/posts/{id}` | Post detail with annotation, edit/lifecycle controls, related memories, and append-only memory-history timeline (each update expands to the prior values it replaced) | Session |
 
 ### 6.2 Actions
 
@@ -566,7 +597,8 @@ Human → Web UI at /posts/{id}
 Human → Web UI at /posts/{id}
   → Post-detail template renders creation event + update_history entries
   → Sees identity, timestamp, and changed-field list for each event
-  → Uses the timeline as an audit trail; each update's `prior` map makes the replaced content recoverable
+  → Expands an update to see the prior value of every field it changed
+  → Uses the timeline as an append-only audit trail of the memory's content
 ```
 
 ---
