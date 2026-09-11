@@ -382,10 +382,12 @@ class BotTalkDB:
         set_fields["updated_at"] = now
 
         # Build the update record
+        prior = {field: doc.get(field) for field in changes_parts}
         update_record = {
             "identity": update.identity,
             "timestamp": now,
             "changes": ", ".join(changes_parts),
+            "prior": prior,
         }
 
         # Append to update_history

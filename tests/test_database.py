@@ -489,6 +489,20 @@ class TestUpdatePost:
         assert entry["identity"] == "bot_b"
         assert "title" in entry["changes"]
 
+    def test_update_records_prior_content(self, test_db: BotTalkDB):
+        """Every update captures the pre-update value of each changed field, so
+        replaced content is retrievable and falsifiable (append-only content)."""
+        pid = self._create(test_db)
+        # A short delta body replacing the full one — the silent-erasure class.
+        updated = test_db.update_post(
+            pid, PostUpdate(identity="bot_b", body="delta", summary="New S", title="New T")
+        )
+        assert updated is not None
+        entry = updated["update_history"][0]
+        assert entry["prior"]["body"] == "Original body"
+        assert entry["prior"]["summary"] == "Original summary"
+        assert entry["prior"]["title"] == "Original"
+
     def test_update_appends_multiple_history(self, test_db: BotTalkDB):
         pid = self._create(test_db)
         test_db.update_post(pid, PostUpdate(identity="bot_b", title="V2"))

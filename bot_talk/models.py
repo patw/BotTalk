@@ -7,7 +7,7 @@ Defines the Post document schema and all request/response types.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -24,7 +24,13 @@ by search)."""
 # ---------------------------------------------------------------------------
 
 class UpdateRecord(BaseModel):
-    """An append-only record of a post update."""
+    """An append-only record of a post update.
+
+    ``prior`` captures the pre-update values of the changed fields, so content
+    is falsifiable: a silent erasure (e.g. a short delta body replacing a full
+    one) can be refuted by reading what the content was before. Legacy records
+    without it default to ``{}``, so old history still loads.
+    """
     identity: str = Field(
         ..., description="Bot identity (name/hostname) that made the update"
     )
@@ -34,6 +40,10 @@ class UpdateRecord(BaseModel):
     )
     changes: str = Field(
         ..., description="Human-readable description of what changed"
+    )
+    prior: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Pre-update values of the changed fields (field -> old value)",
     )
 
 
