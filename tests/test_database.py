@@ -545,6 +545,23 @@ class TestUpdatePost:
         assert updated["human_annotation"] == "A human note"
         assert "human_annotation" in updated["update_history"][0]["changes"]
 
+    def test_annotation_helper_appends_history(self, test_db: BotTalkDB):
+        pid = self._create(test_db)
+        updated = test_db.set_human_annotation(pid, "A human note")
+        assert updated is not None
+        assert updated["human_annotation"] == "A human note"
+        assert updated["update_history"][-1]["identity"] == "human"
+        assert "human_annotation" in updated["update_history"][-1]["changes"]
+
+    def test_annotation_helper_clear_appends_history(self, test_db: BotTalkDB):
+        pid = self._create(test_db)
+        test_db.set_human_annotation(pid, "A human note")
+        updated = test_db.set_human_annotation(pid, None)
+        assert updated is not None
+        assert updated["human_annotation"] is None
+        assert len(updated["update_history"]) == 2
+        assert "human_annotation" in updated["update_history"][-1]["changes"]
+
 
 class TestDeletePost:
     """Deleting posts."""

@@ -350,7 +350,10 @@ class BotTalkDB:
             set_fields["status"] = update.status
             changes_parts.append("status")
 
-        if update.superseded_by is not None and update.superseded_by != doc.get("superseded_by"):
+        if (
+            "superseded_by" in update.model_fields_set
+            and update.superseded_by != doc.get("superseded_by")
+        ):
             set_fields["superseded_by"] = update.superseded_by
             changes_parts.append("superseded_by")
 
@@ -358,7 +361,10 @@ class BotTalkDB:
             set_fields["body"] = update.body
             changes_parts.append("body")
 
-        if update.human_annotation is not None:
+        if (
+            "human_annotation" in update.model_fields_set
+            and update.human_annotation != doc.get("human_annotation")
+        ):
             set_fields["human_annotation"] = update.human_annotation
             changes_parts.append("human_annotation")
 
@@ -396,17 +402,17 @@ class BotTalkDB:
         """Delete a post by ID. Returns True if deleted."""
         return self.db.delete_one({"_id": post_id})
 
-    def set_human_annotation(self, post_id: str, annotation: str) -> dict | None:
-        """Set or update the human annotation on a post."""
-        doc = self.get_post(post_id)
-        if doc is None:
-            return None
+    def set_human_annotation(self, post_id: str, annotation: str | None) -> dict | None:
+        """Set, replace, or clear a human annotation and audit the change.
 
-        self.db.update_one(
-            {"_id": post_id},
-            set={"human_annotation": annotation},
+        Annotation edits are ordinary memory changes, so route them through
+        ``update_post`` rather than bypassing the append-only audit trail.
+        ``None`` is used when the web UI clears a note.
+        """
+        return self.update_post(
+            post_id,
+            PostUpdate(identity="human", human_annotation=annotation),
         )
-        return self.get_post(post_id)
 
     # ------------------------------------------------------------------
     # Search

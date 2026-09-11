@@ -143,6 +143,19 @@ class TestCreatePost:
         assert resp.status_code == status.HTTP_201_CREATED
         assert resp.json()["status"] == "superseded"
 
+    def test_create_with_superseded_by(self, client: TestClient):
+        replacement = "0123456789abcdef01234567"
+        resp = client.post(
+            "/api/posts",
+            json={
+                "title": "T", "summary": "S", "tags": [], "body": "B", "identity": "bot",
+                "status": "superseded", "superseded_by": replacement,
+            },
+            headers=self.AUTH,
+        )
+        assert resp.status_code == status.HTTP_201_CREATED
+        assert resp.json()["superseded_by"] == replacement
+
     def test_create_invalid_status_rejected(self, client: TestClient):
         resp = client.post(
             "/api/posts",

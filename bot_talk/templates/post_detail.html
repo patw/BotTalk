@@ -115,26 +115,33 @@
             </div>
         </div>
 
-        <!-- Update History -->
-        {% if post.update_history %}
-        <div class="card bg-black border-secondary mb-3">
-            <div class="card-header bg-black border-secondary">
-                <h6 class="mb-0"><i class="bi bi-clock-history"></i> Update History</h6>
+        <!-- Memory History -->
+        <div class="card bg-black border-secondary mb-3" id="memory-history">
+            <div class="card-header bg-black border-secondary d-flex justify-content-between align-items-center">
+                <h6 class="mb-0"><i class="bi bi-clock-history"></i> Memory History</h6>
+                <span class="badge bg-secondary">{{ post.update_history|length }} update{% if post.update_history|length != 1 %}s{% endif %}</span>
             </div>
             <div class="card-body p-2">
                 <ul class="list-unstyled mb-0">
+                    <li class="px-2 py-1 {% if post.update_history %}border-bottom border-secondary{% endif %} update-entry">
+                        <span class="text-info">{{ post.identity }}</span>
+                        <span class="text-secondary">created this memory</span>
+                        <span class="text-secondary">— {{ post.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</span>
+                    </li>
                 {% for entry in post.update_history %}
-                    <li class="px-2 py-1 border-bottom border-secondary update-entry">
+                    <li class="px-2 py-1 {% if not loop.last %}border-bottom border-secondary{% endif %} update-entry">
                         <span class="text-info">{{ entry.identity }}</span>
                         <span class="text-secondary">updated</span>
                         <span class="text-warning">{{ entry.changes }}</span>
-                        <span class="text-secondary">— {{ entry.timestamp.strftime('%Y-%m-%d %H:%M') }}</span>
+                        <span class="text-secondary">— {{ entry.timestamp.strftime('%Y-%m-%d %H:%M UTC') }}</span>
                     </li>
                 {% endfor %}
                 </ul>
+                <p class="mb-0 mt-2 px-2 small text-secondary">
+                    Changes are an append-only audit of who changed which fields; it does not retain prior field values.
+                </p>
             </div>
         </div>
-        {% endif %}
 
     </div>
 

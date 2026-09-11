@@ -132,6 +132,7 @@ async def create_post(
         body=body.body,
         identity=body.identity,
         status=body.status,
+        superseded_by=body.superseded_by,
     )
     get_analytics().record("memory_added", post_id=doc.get("_id"), tags=doc.get("tags"), created_at=doc.get("created_at"))
     return doc_to_response(doc)
