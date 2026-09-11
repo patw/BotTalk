@@ -404,6 +404,35 @@ class TestTagNormalization:
         )
         assert doc["tags"] == ["max-length"]
 
+    def test_synonym_aliases_coerce(self, test_db: BotTalkDB):
+        """2026-09-11 lint synonyms map to their canonical spelling."""
+        doc = test_db.create_post(
+            title="T", summary="s",
+            tags=[
+                "bot-talk", "llama-cpp", "llm-proxy", "game-dev",
+                "bug-fix", "gotchas", "pengy-r",
+            ],
+            body="b", identity="bot",
+        )
+        assert doc["tags"] == [
+            "bottalk", "llama.cpp", "llmproxy", "gamedev",
+            "bugfix", "gotcha", "pengyr",
+        ]
+
+    def test_bot_talk_alias_overrides_sticky_vocab(self, test_db: BotTalkDB):
+        """A legacy spelling already in the vocab still coerces to its alias."""
+        from datetime import datetime, timezone
+        test_db.db.insert({
+            "title": "Legacy", "summary": "s", "tags": ["bot-talk"],
+            "body": "b", "identity": "bot",
+            "created_at": datetime.now(timezone.utc), "updated_at": None,
+            "update_history": [], "human_annotation": None,
+        })
+        doc = test_db.create_post(
+            title="T", summary="s", tags=["bot-talk"], body="b", identity="bot",
+        )
+        assert doc["tags"] == ["bottalk"]
+
 
 class TestLintTags:
     """Tag hygiene report — lint_tags()."""

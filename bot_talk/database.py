@@ -92,7 +92,18 @@ TAG_ALIASES = {
     "skills": "skill",
     "opensource": "open-source",
     "openai-proxy": "llmproxy",
+    "llm-proxy": "llmproxy",
     "max_length": "max-length",
+    # Confirmed synonyms from the 2026-09-11 ``tags --lint`` pass. Deliberately
+    # NOT aliased (advisory-only near-dupes that are genuinely different tags):
+    # pengy <-> pengyr (different editions), date tags (2026-08-22 vs
+    # 2026-08-23), and unrelated d=1 pairs like gaming <-> naming.
+    "bot-talk": "bottalk",
+    "llama-cpp": "llama.cpp",
+    "game-dev": "gamedev",
+    "bug-fix": "bugfix",
+    "gotchas": "gotcha",
+    "pengy-r": "pengyr",
 }
 
 
