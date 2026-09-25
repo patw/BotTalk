@@ -531,9 +531,18 @@ Health check. No authentication required.
 | Route | Description | Auth |
 |---|---|---|
 | `/login` | Login form | None |
-| `/` | Paginated post list with lexical search (`?q=`), tag browse (`?tags=`), and stats sidebar | Session |
+| `/` | Paginated post list with lexical search (`?q=`), tag browse (`?tags=`), sort order (`?sort=`), and stats sidebar | Session |
 | `/analytics` | Corpus analytics dashboard; `days` query parameter controls window | Session |
 | `/posts/{id}` | Post detail with annotation, edit/lifecycle controls, related memories, and append-only memory-history timeline (each update expands to the prior values it replaced) | Session |
+
+**Sort order.** The list (and a tag browse) defaults to sorting by **last
+activity** — `sort=modified`, i.e. `updated_at` when the post has been edited,
+else `created_at`, so an edit bubbles a memory back to the top.  A header toggle
+switches to `sort=created` (newest-created first); the choice rides through
+pagination and tag browse.  Search results (`q`) are always relevance-ranked and
+ignore `sort`.  (moofile sorts a single field and floats a *missing* value to the
+top under descending order, so the coalescing is done in Python — see
+`_modified_sort_key`.)
 
 **Tag browse (`/?tags=`).** Every tag badge rendered in the UI — on the post
 list, post detail (header + sidebar), and the analytics tag panels — is a link

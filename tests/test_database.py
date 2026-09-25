@@ -4,7 +4,7 @@ Tests for BotTalk database layer — CRUD, search, human annotations.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -218,6 +218,51 @@ class TestListPosts:
         # Last created should be first in the list
         timestamps = [d["created_at"] for d in docs]
         assert timestamps == sorted(timestamps, reverse=True)
+
+    def test_list_sorted_by_modified_bubbles_edits(self, test_db: BotTalkDB):
+        """sort='modified' uses updated_at when present, else created_at."""
+        now = datetime(2026, 8, 20, 12, tzinfo=timezone.utc)
+
+        def make(title, created, updated=None):
+            d = test_db.create_post(
+                title=title, summary=title, tags=[], body="", identity="bot"
+            )
+            fields = {"created_at": created}
+            if updated is not None:
+                fields["updated_at"] = updated
+            test_db.db.update_one({"_id": d["_id"]}, set=fields)
+
+        make("Old but edited", now - timedelta(days=30), now - timedelta(hours=1))
+        make("Newest", now - timedelta(days=1))
+        make("Middle", now - timedelta(days=10))
+
+        # A recent edit lifts the oldest post above the newest-created one; the
+        # never-edited posts keep newest-created order behind it (regression for
+        # the moofile "missing field sorts to the top" quirk).
+        docs, total = test_db.list_posts(sort="modified")
+        assert total == 3
+        assert [d["title"] for d in docs] == ["Old but edited", "Newest", "Middle"]
+
+        # The default (created) order is unchanged.
+        docs, _ = test_db.list_posts()
+        assert [d["title"] for d in docs] == ["Newest", "Middle", "Old but edited"]
+
+    def test_list_modified_sort_pages_the_top_n(self, test_db: BotTalkDB):
+        now = datetime(2026, 8, 20, 12, tzinfo=timezone.utc)
+        for i in range(5):
+            d = test_db.create_post(
+                title=f"P{i}", summary="s", tags=[], body="", identity="bot"
+            )
+            test_db.db.update_one(
+                {"_id": d["_id"]}, set={"created_at": now - timedelta(days=i)}
+            )
+
+        page1, total = test_db.list_posts(sort="modified", limit=2)
+        assert total == 5
+        assert [d["title"] for d in page1] == ["P0", "P1"]
+
+        page2, _ = test_db.list_posts(sort="modified", skip=2, limit=2)
+        assert [d["title"] for d in page2] == ["P2", "P3"]
 
     def test_list_no_match_filter(self, test_db: BotTalkDB):
         self._seed(test_db)

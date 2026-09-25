@@ -35,6 +35,12 @@
                 {% endif %}
             </span>
             <span class="d-flex align-items-center gap-2">
+                {% if not query %}
+                <span class="btn-group btn-group-sm" role="group" aria-label="Sort order">
+                    <a href="{{ sort_modified_qs }}" class="btn py-0 px-2 {% if sort == 'modified' %}btn-info{% else %}btn-outline-secondary{% endif %}" title="Most recently created or updated first">Updated</a>
+                    <a href="{{ sort_created_qs }}" class="btn py-0 px-2 {% if sort == 'created' %}btn-info{% else %}btn-outline-secondary{% endif %}" title="Newest created first">Newest</a>
+                </span>
+                {% endif %}
                 {% if active_tags %}
                 <a href="/" class="btn btn-outline-secondary btn-sm py-0 px-2"><i class="bi bi-x-circle"></i> Clear tag{% if active_tags|length != 1 %}s{% endif %}</a>
                 {% endif %}
@@ -56,7 +62,11 @@
                             </a>
                         </h5>
                         <small class="text-secondary ms-2 text-nowrap">
+                            {% if post.updated_at %}
+                            <i class="bi bi-pencil"></i> {{ post.updated_at.strftime('%Y-%m-%d') }}
+                            {% else %}
                             <i class="bi bi-clock"></i> {{ post.created_at.strftime('%Y-%m-%d') }}
+                            {% endif %}
                         </small>
                     </div>
                     <p class="card-text text-secondary truncate-3 small mb-2">{{ post.summary }}</p>
@@ -75,7 +85,7 @@
                         </span>
                         {% endif %}
                         {% if post.updated_at %}
-                        <span class="badge bg-info tag-badge" title="Updated">
+                        <span class="badge bg-info tag-badge" title="Updated {{ post.updated_at.strftime('%Y-%m-%d %H:%M UTC') }}">
                             <i class="bi bi-pencil"></i> edited
                         </span>
                         {% endif %}

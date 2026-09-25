@@ -15,6 +15,7 @@ opened or compacted.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -198,3 +199,81 @@ def test_pagination_preserves_tag_filter(web_client):
     assert "Page 1 of 2" in html
     # Jinja autoescaping renders the URL's '&' as '&amp;'.
     assert "?tags=bulk&amp;page=2" in html
+
+
+# ---------------------------------------------------------------------------
+# Sort order (default = last modified)
+# ---------------------------------------------------------------------------
+
+
+def _seed_sortable(db: BotTalkDB) -> None:
+    """Three posts where the *oldest* was edited most recently.
+
+    Titles are deliberately free of words that appear in the sort-toggle
+    labels/tooltips ("newest", "created", "updated", "recently") so the HTML
+    index() assertions below can't match the header instead of a card.
+    """
+    now = datetime(2026, 1, 1, 12, tzinfo=timezone.utc)
+    for title, created, updated in [
+        ("Zeta", now - timedelta(days=30), now - timedelta(hours=1)),
+        ("Bravo", now - timedelta(days=1), None),
+        ("Charlie", now - timedelta(days=10), None),
+    ]:
+        d = db.create_post(
+            title=title, summary=title, tags=["sortme"], body="b", identity="p",
+        )
+        fields = {"created_at": created}
+        if updated is not None:
+            fields["updated_at"] = updated
+        db.db.update_one({"_id": d["_id"]}, set=fields)
+
+
+def test_default_list_sorted_by_modified(web_client):
+    client, db = web_client
+    _seed_sortable(db)
+
+    html = client.get("/").text
+    assert html.index("Zeta") < html.index("Bravo") < html.index("Charlie")
+
+
+def test_sort_created_restores_newest_created_order(web_client):
+    client, db = web_client
+    _seed_sortable(db)
+
+    html = client.get("/?sort=created").text
+    assert html.index("Bravo") < html.index("Charlie") < html.index("Zeta")
+
+
+def test_sort_toggle_present_and_default_modified_active(web_client):
+    client, db = web_client
+    _seed_sortable(db)
+
+    html = client.get("/").text
+    assert 'href="?sort=created"' in html
+    # "Updated" is the active (btn-info) button on the default page…
+    assert 'btn-info" title="Most recently created or updated first"' in html
+    # …and "Newest" is the active one when explicitly chosen.
+    html2 = client.get("/?sort=created").text
+    assert 'btn-info" title="Newest created first"' in html2
+
+
+def test_tag_browse_follows_sort(web_client):
+    client, db = web_client
+    _seed_sortable(db)
+
+    html = client.get("/?tags=sortme").text
+    assert html.index("Zeta") < html.index("Bravo")
+
+    html2 = client.get("/?tags=sortme&sort=created").text
+    assert html2.index("Bravo") < html2.index("Zeta")
+
+
+def test_pagination_preserves_sort(web_client):
+    client, db = web_client
+    for i in range(30):  # 25 per page -> 2 pages
+        db.create_post(
+            title=f"Bulk {i}", summary="s", tags=["bulk"], body="b", identity="p",
+        )
+
+    html = client.get("/?sort=created").text
+    assert "?sort=created&amp;page=2" in html

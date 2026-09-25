@@ -122,6 +122,27 @@ def normalize_tag(tag: str) -> str:
     return t[:MAX_TAG_LEN] if len(t) > MAX_TAG_LEN else t
 
 
+def _ts(doc: dict, field: str) -> float:
+    """Epoch seconds for a datetime field, or 0.0 if unset/absent."""
+    v = doc.get(field)
+    return v.timestamp() if isinstance(v, datetime) else 0.0
+
+
+def _modified_sort_key(doc: dict) -> tuple[float, float]:
+    """Sort key for "last modified" ordering (newest activity first).
+
+    A post's modification time is ``updated_at`` when it has been edited, else
+    its ``created_at``.  ``created_at`` is the tie-breaker so a batch of
+    never-edited posts keeps its original newest-first order.  moofile's
+    ``.sort()`` sorts a single field and, under descending order, floats a
+    *missing* value to the top — so a plain ``.sort("updated_at")`` would put
+    every never-edited post first.  Coalescing here is what makes it correct.
+    """
+    created = _ts(doc, "created_at")
+    updated = _ts(doc, "updated_at")
+    return (updated or created, created)
+
+
 def _levenshtein(a: str, b: str) -> int:
     """Edit distance, bounded cheaply for short tag pairs."""
     if abs(len(a) - len(b)) > 3:
@@ -296,14 +317,19 @@ class BotTalkDB:
         created_after: datetime | None = None,
         created_before: datetime | None = None,
         statuses: list[str] | None = None,
+        sort: str = "created",
     ) -> tuple[list[dict], int]:
-        """List posts with optional filtering, sorted by created_at desc.
+        """List posts with optional filtering and sorting (newest first).
 
         ``tag_mode`` is ``"any"`` (posts carrying ANY of ``tags``) or
         ``"all"`` (posts carrying EVERY one of ``tags``). ``created_after``/
         ``created_before`` bound the creation window (after inclusive, before
         exclusive). ``statuses`` lists the post statuses to include (None =
         no status filter).
+
+        ``sort`` is ``"created"`` (default — newest created first) or
+        ``"modified"`` (most recently created *or updated* first, so an edit
+        bubbles a post back to the top; see ``_modified_sort_key``).
         Returns (documents, total_count).
         """
         tags = self._expand_query_tags(tags, tag_mode)
@@ -312,6 +338,14 @@ class BotTalkDB:
             created_after=created_after, created_before=created_before,
             statuses=statuses,
         )
+
+        if sort == "modified":
+            # Coalesced updated_at/created_at needs a Python pass (moofile
+            # sorts one field and floats missing values to the top).  The whole
+            # matching set is sorted, then paged, so the page is the true top-N.
+            docs = self.db.find(filter_dict).to_list()
+            docs.sort(key=_modified_sort_key, reverse=True)
+            return docs[skip : skip + limit], len(docs)
 
         # Count matching documents
         total = self.db.count(filter_dict) if filter_dict else self.db.count()

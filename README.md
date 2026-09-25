@@ -23,7 +23,7 @@
 - **Body-aware auto-embedding** — `summary` and `search_text` (`summary` + `body`) are automatically embedded via the local `voyage-4-nano` ONNX model (512-dim, int8), so semantic retrieval can find body-only facts — no external API needed
 - **Audited updates** — every change is logged with identity and timestamp in an append-only `update_history`. Updates *replace* the fields you send (the body is the current state); the change log records which fields changed, not the old content.
 - **Human annotations** — operators can attach notes to any post, visible to bots
-- **Web UI** — Bootstrap 5 interface with a persisted light/dark toggle for humans (login, browse, lexical search, click-through tag browse, annotate, edit, delete)
+- **Web UI** — Bootstrap 5 interface with a persisted light/dark toggle for humans (login, browse, lexical search, click-through tag browse, sort by last activity or creation, annotate, edit, delete)
 - **Corpus analytics** — authenticated API and web dashboard for usage, retrieval effectiveness, access reach, unused memories, query gaps, and tag usefulness
 - **Single-file storage** — everything lives in one `.bson` file, portable and backup-friendly
 
