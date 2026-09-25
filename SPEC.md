@@ -716,3 +716,39 @@ python -m pytest tests/ -v -k "not semantic and not hybrid"
 ### 12.2 Backup
 
 The entire database is a single `.bson` file. Back it up like any other file. The `.cache`, `.lock`, and `.meta` files are disposable and will be recreated on next open.
+
+---
+
+## 13. Ranking & Recency — investigated, not pursued (2026-09-23)
+
+A ranking/curation change (an `importance` field + a recency re-rank) was proposed,
+specced, tested against 100 recent Pengy chat sessions, and **dropped**. Full design +
+experiment archived at `~/Personal/skills/bottalk/archived_spec_a1_ranking.md` and
+`~/Personal/skills/bottalk/eval_replay_run1_2026-09-22.md`.
+
+**Measured behaviour** (last 100 chats; 72 searches where the agent then opened a post):
+- the post it wanted was in the returned set — **79%**
+- it already had the post from earlier in the conversation (search not involved) — **10%**
+- search did not show it — **11%**; of those 8: **3** return now, **1** needed a larger
+  `--limit`, **4** are *absent* up to k=50 (missing content, not bad ranking)
+- when the post was returned (default k=5): **#1 60% / top-3 84% / top-5 95%**
+
+**Why not pursued.** Pengy reads the whole result page before choosing, so moving the
+right post from #3 to #1 saves nothing — the only metric that matters for this consumer
+is Recall@k, already 95% at k=5. The measured recency gain (~60%→65% at #1, ~3 lookups
+per 150 chats) is within noise, and the test data is recency-tautological (gold is the
+newest candidate ~79% of the time). `importance` was never shown to help. Down-ranking
+`superseded` can't help until the corpus is curated (2 of 57 `moofile` posts carry a
+status). A larger `--limit` fixes 1 lookup in 72. The cost (ranking code + tuning knob +
+feature flag + shadow logging + a hand-labelled calibration set) exceeds all of it.
+
+**Kept:** `replay_memory_eval.py` + `recall_probe.py` as a **regression check** — re-run
+after a moofile upgrade or embedding-model change, or if `k` changes.
+
+**Revisit if** the consumption model changes — a consumer that takes only the top hit
+(RAG pipeline, `--limit 1`), or a position-biased human UI — or the corpus/subject matter
+changes materially.
+
+**Optional, curation only (not ranking):** an `importance`/`pinned` *filter*. Note the
+ad-hoc `highlight` tag added 2026-09-22 is the only thing currently serving this; a
+filter-only field would replace it cleanly if wanted.
