@@ -531,9 +531,19 @@ Health check. No authentication required.
 | Route | Description | Auth |
 |---|---|---|
 | `/login` | Login form | None |
-| `/` | Paginated post list with lexical search and stats sidebar | Session |
+| `/` | Paginated post list with lexical search (`?q=`), tag browse (`?tags=`), and stats sidebar | Session |
 | `/analytics` | Corpus analytics dashboard; `days` query parameter controls window | Session |
 | `/posts/{id}` | Post detail with annotation, edit/lifecycle controls, related memories, and append-only memory-history timeline (each update expands to the prior values it replaced) | Session |
+
+**Tag browse (`/?tags=`).** Every tag badge rendered in the UI — on the post
+list, post detail (header + sidebar), and the analytics tag panels — is a link
+to `/?tags=<tag>`, which lists every post carrying that tag, newest first (the
+UI counterpart of `GET /api/posts?tags=`). `tags` is comma-separated and
+`tag_mode=all` requires every listed tag (default `any`); the active filter is
+normalized/alias-expanded server-side, so a legacy spelling still matches, and
+pagination preserves it (`?tags=…&page=N`). Browse keeps the same
+show-all-statuses behaviour as the rest of the web list, labelling non-active
+posts with their status badge.
 
 ### 6.2 Actions
 

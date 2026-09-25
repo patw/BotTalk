@@ -8,6 +8,7 @@ editing and deleting bot posts.
 from __future__ import annotations
 
 from typing import Optional
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -86,13 +87,28 @@ async def posts_list(
     request: Request,
     page: int = Query(1, ge=1),
     q: Optional[str] = Query(None),
+    tags: Optional[str] = Query(None),
+    tag_mode: str = Query("any"),
     _=Depends(require_web_auth),
 ):
-    """Main posts list page with search and pagination."""
+    """Main posts list page with search, tag browsing and pagination.
+
+    ``tags`` (comma-separated) turns the page into a **tag browse**: every post
+    carrying any listed tag (or all of them, when ``tag_mode=all``), newest
+    first — the UI counterpart of ``GET /api/posts?tags=``. This is what the
+    clickable tag badges throughout the UI link to.
+    """
     db: BotTalkDB = get_db()
     per_page = 25
 
-    if q:
+    active_tags = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+    if tag_mode not in ("any", "all"):
+        tag_mode = "any"
+
+    if active_tags:
+        # Tag browse: fetch up to 1000 matching posts, then paginate in Python.
+        all_docs, total = db.list_posts(tags=active_tags, tag_mode=tag_mode, limit=1000)
+    elif q:
         # Use lexical search for human searches
         results = db.search_lexical(q, limit=100)
         all_docs = [doc for doc, _ in results]
@@ -108,6 +124,17 @@ async def posts_list(
     start = (page - 1) * per_page
     end = start + per_page
     page_docs = all_docs[start:end]
+
+    # Build the querystring prefix the pagination links append `page=N` to, so
+    # paging preserves the active search query and/or tag filter.
+    _params: dict[str, str] = {}
+    if q:
+        _params["q"] = q
+    if active_tags:
+        _params["tags"] = ",".join(active_tags)
+        if tag_mode == "all":
+            _params["tag_mode"] = "all"
+    filter_qs = ("?" + urlencode(_params) + "&") if _params else "?"
 
     # Stats
     stats = db.stats()
@@ -127,6 +154,10 @@ async def posts_list(
             "total_pages": total_pages,
             "per_page": per_page,
             "query": q or "",
+            "tags": tags or "",
+            "active_tags": active_tags,
+            "tag_mode": tag_mode,
+            "filter_qs": filter_qs,
             "docs_count": docs_count,
             "file_size": file_size,
             "dead_ratio": dead_ratio,
