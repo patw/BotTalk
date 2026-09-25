@@ -380,6 +380,30 @@ class TestModifiedAt:
         )
         assert test_db.backfill_modified_at() == 0  # already has the field
 
+    def test_no_embed_backfill_helper_migrates_standalone(self, tmp_path):
+        """The startup helper migrates a legacy DB via a no-embed handle."""
+        from bot_talk.database import _backfill_modified_at_no_embed
+
+        p = str(tmp_path / "legacy.bson")
+        db = BotTalkDB(db_path=p, auto_embed={})
+        db.open()
+        doc = db.db.insert({
+            "title": "Legacy", "summary": "s", "tags": [], "body": "b",
+            "identity": "bot", "status": "active", "superseded_by": None,
+            "created_at": datetime(2026, 3, 1, tzinfo=timezone.utc),
+            "updated_at": None, "update_history": [], "human_annotation": None,
+        })
+        db.close()
+
+        assert _backfill_modified_at_no_embed(p) == 1
+
+        db2 = BotTalkDB(db_path=p, auto_embed={})
+        db2.open()
+        got = db2.get_post(doc["_id"])
+        assert got["modified_at"] == got["created_at"]
+        assert db2.backfill_modified_at() == 0  # nothing left to do
+        db2.close()
+
 
 class TestListTags:
     """Tag aggregation via list_tags()."""

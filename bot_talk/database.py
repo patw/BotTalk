@@ -921,20 +921,40 @@ class BotTalkDB:
 _db_instance: BotTalkDB | None = None
 
 
+def _backfill_modified_at_no_embed(db_path: str) -> int:
+    """Run the ``modified_at`` backfill through a no-embed handle.
+
+    A metadata-only write must NOT go through the auto-embed handle: moofile
+    re-embeds a document's vector fields on every update, so backfilling N
+    memories through the embedding handle would re-embed the whole corpus
+    (minutes of all-core CPU — this stalled a real startup).  Opening a
+    short-lived handle with embedding disabled punches the field in without
+    touching the stored vectors; the app then opens normally.  Used before the
+    application handle exists, so the two handles never coexist.  Same trick as
+    ``tools/backfill_status.py``.
+    """
+    mig = BotTalkDB(db_path=db_path, auto_embed={})
+    mig.open()
+    try:
+        return mig.backfill_modified_at()
+    finally:
+        mig.close()
+
+
 def get_db(auto_embed: dict | None = None) -> BotTalkDB:
     """Get or create the global BotTalkDB singleton.
 
-    On first open it also runs the idempotent ``modified_at`` backfill, so any
-    process that touches the DB (server, CLI/tool, API) self-heals a corpus
-    written before the field existed — no separate migration step needed.
+    On first open it also runs the idempotent ``modified_at`` backfill — with
+    embedding disabled (see ``_backfill_modified_at_no_embed``) and before the
+    application handle opens — so any process that touches the DB (server,
+    CLI/tool, API) self-heals a corpus written before the field existed, without
+    re-embedding it.  Best-effort: a migration hiccup never blocks startup.
     """
     global _db_instance
     if _db_instance is None:
         db_path = os.environ.get("BOTTALK_DB_PATH", DEFAULT_DB_PATH)
-        _db_instance = BotTalkDB(db_path=db_path, auto_embed=auto_embed)
-        _db_instance.open()
         try:
-            migrated = _db_instance.backfill_modified_at()
+            migrated = _backfill_modified_at_no_embed(db_path)
             if migrated:
                 print(
                     f"[BotTalk] backfilled modified_at on {migrated} memory(ies)",
@@ -942,6 +962,8 @@ def get_db(auto_embed: dict | None = None) -> BotTalkDB:
                 )
         except Exception as exc:  # never block startup on a migration hiccup
             print(f"[BotTalk] modified_at backfill skipped: {exc}", file=sys.stderr)
+        _db_instance = BotTalkDB(db_path=db_path, auto_embed=auto_embed)
+        _db_instance.open()
     return _db_instance
 
 
