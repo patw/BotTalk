@@ -222,7 +222,7 @@ def _seed_sortable(db: BotTalkDB) -> None:
         d = db.create_post(
             title=title, summary=title, tags=["sortme"], body="b", identity="p",
         )
-        fields = {"created_at": created}
+        fields = {"created_at": created, "modified_at": updated or created}
         if updated is not None:
             fields["updated_at"] = updated
         db.db.update_one({"_id": d["_id"]}, set=fields)

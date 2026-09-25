@@ -83,6 +83,12 @@ class PostDocument(BaseModel):
     updated_at: Optional[datetime] = Field(
         None, description="ISO-8601 timestamp of last update"
     )
+    modified_at: Optional[datetime] = Field(
+        None,
+        description="Last activity: updated_at when the post has been edited, "
+        "else created_at. Drives 'last modified' ordering; explicit (backfilled) "
+        "for posts created before the field existed.",
+    )
     update_history: list[UpdateRecord] = Field(
         default_factory=list,
         description="Append-only log of all updates",
@@ -225,6 +231,11 @@ class PostResponse(BaseModel):
     superseded_by: Optional[str] = Field(None, description="(Post) id of the replacement post")
     created_at: datetime
     updated_at: Optional[datetime] = None
+    modified_at: Optional[datetime] = Field(
+        None,
+        description="Last activity: updated_at when edited, else created_at. "
+        "Order by this for 'recently touched' listings.",
+    )
     update_history: list[UpdateRecord] = []
     human_annotation: Optional[str] = None
 
@@ -450,6 +461,7 @@ def doc_to_response(doc: dict) -> PostResponse:
         "superseded_by": doc.get("superseded_by"),
         "created_at": doc.get("created_at"),
         "updated_at": doc.get("updated_at"),
+        "modified_at": doc.get("modified_at"),
         "update_history": [
             UpdateRecord(**r) for r in (doc.get("update_history") or [])
         ],

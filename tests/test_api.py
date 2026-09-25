@@ -101,6 +101,17 @@ class TestCreatePost:
         data = resp.json()
         assert len(data["id"]) > 0  # Should be a non-empty hex string
 
+    def test_create_sets_modified_at_to_created_at(self, client: TestClient):
+        """A new post's modified_at starts equal to created_at."""
+        resp = client.post(
+            "/api/posts",
+            json={"title": "T", "summary": "S", "tags": [], "body": "B", "identity": "bot"},
+            headers=self.AUTH,
+        )
+        data = resp.json()
+        assert data["modified_at"] is not None
+        assert data["modified_at"] == data["created_at"]
+
     def test_create_post_empty_tags(self, client: TestClient):
         resp = client.post(
             "/api/posts",
@@ -525,6 +536,16 @@ class TestUpdatePost:
         data = resp.json()
         assert len(data["update_history"]) == 1
         assert data["update_history"][0]["identity"] == "bot_b"
+
+    def test_update_bumps_modified_at(self, client: TestClient):
+        """An edit moves modified_at to the update time (== updated_at)."""
+        pid = self._create(client)
+        before = client.get(f"/api/posts/{pid}", headers=self.AUTH).json()
+        resp = client.put(f"/api/posts/{pid}", json={"identity": "bot_b", "title": "V2"}, headers=self.AUTH)
+        after = resp.json()
+        assert after["modified_at"] is not None
+        assert after["modified_at"] == after["updated_at"]
+        assert after["modified_at"] >= before["modified_at"]
 
     def test_update_multiple_times(self, client: TestClient):
         pid = self._create(client)

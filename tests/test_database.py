@@ -220,14 +220,14 @@ class TestListPosts:
         assert timestamps == sorted(timestamps, reverse=True)
 
     def test_list_sorted_by_modified_bubbles_edits(self, test_db: BotTalkDB):
-        """sort='modified' uses updated_at when present, else created_at."""
+        """sort='modified' orders by modified_at (edit time wins)."""
         now = datetime(2026, 8, 20, 12, tzinfo=timezone.utc)
 
         def make(title, created, updated=None):
             d = test_db.create_post(
                 title=title, summary=title, tags=[], body="", identity="bot"
             )
-            fields = {"created_at": created}
+            fields = {"created_at": created, "modified_at": updated or created}
             if updated is not None:
                 fields["updated_at"] = updated
             test_db.db.update_one({"_id": d["_id"]}, set=fields)
@@ -253,8 +253,10 @@ class TestListPosts:
             d = test_db.create_post(
                 title=f"P{i}", summary="s", tags=[], body="", identity="bot"
             )
+            created = now - timedelta(days=i)
             test_db.db.update_one(
-                {"_id": d["_id"]}, set={"created_at": now - timedelta(days=i)}
+                {"_id": d["_id"]},
+                set={"created_at": created, "modified_at": created},
             )
 
         page1, total = test_db.list_posts(sort="modified", limit=2)
@@ -321,6 +323,62 @@ class TestListPosts:
         )
         assert total == 1
         assert docs[0]["title"] == "Inside"
+
+
+class TestModifiedAt:
+    """The persisted ``modified_at`` field: write path + startup backfill."""
+
+    def test_create_sets_modified_at_to_created(self, test_db: BotTalkDB):
+        doc = test_db.create_post(
+            title="New", summary="s", tags=[], body="b", identity="bot"
+        )
+        assert doc["modified_at"] is not None
+        assert doc["modified_at"] == doc["created_at"]
+
+    def test_update_bumps_modified_at(self, test_db: BotTalkDB):
+        doc = test_db.create_post(
+            title="A", summary="s", tags=[], body="b", identity="bot"
+        )
+        updated = test_db.update_post(
+            doc["_id"], PostUpdate(identity="bot", title="B")
+        )
+        assert updated["modified_at"] is not None
+        # An edit makes modified_at track updated_at and never go backwards.
+        assert updated["modified_at"] == updated["updated_at"]
+        assert updated["modified_at"] >= doc["modified_at"]
+
+    def test_backfill_sets_field_on_legacy_docs(self, test_db: BotTalkDB):
+        """Docs inserted without modified_at (pre-migration) get it set."""
+        c = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        u = datetime(2026, 2, 1, tzinfo=timezone.utc)
+
+        edited = test_db.db.insert({
+            "title": "Legacy edited", "summary": "s", "tags": [], "body": "b",
+            "identity": "bot", "status": "active", "superseded_by": None,
+            "created_at": c, "updated_at": u, "update_history": [],
+            "human_annotation": None,
+        })
+        fresh = test_db.db.insert({
+            "title": "Legacy never edited", "summary": "s", "tags": [], "body": "b",
+            "identity": "bot", "status": "active", "superseded_by": None,
+            "created_at": c, "updated_at": None, "update_history": [],
+            "human_annotation": None,
+        })
+
+        assert test_db.backfill_modified_at() == 2
+
+        edited_doc = test_db.get_post(edited["_id"])
+        fresh_doc = test_db.get_post(fresh["_id"])
+        # Edited legacy doc → its update time; never-edited → its creation time.
+        assert edited_doc["modified_at"] == edited_doc["updated_at"]
+        assert fresh_doc["modified_at"] == fresh_doc["created_at"]
+        assert edited_doc["modified_at"] != fresh_doc["modified_at"]
+
+    def test_backfill_is_idempotent(self, test_db: BotTalkDB):
+        test_db.create_post(
+            title="X", summary="s", tags=[], body="b", identity="bot"
+        )
+        assert test_db.backfill_modified_at() == 0  # already has the field
 
 
 class TestListTags:

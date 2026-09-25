@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from typing import Optional
@@ -131,16 +132,20 @@ def _ts(doc: dict, field: str) -> float:
 def _modified_sort_key(doc: dict) -> tuple[float, float]:
     """Sort key for "last modified" ordering (newest activity first).
 
-    A post's modification time is ``updated_at`` when it has been edited, else
-    its ``created_at``.  ``created_at`` is the tie-breaker so a batch of
-    never-edited posts keeps its original newest-first order.  moofile's
-    ``.sort()`` sorts a single field and, under descending order, floats a
-    *missing* value to the top — so a plain ``.sort("updated_at")`` would put
-    every never-edited post first.  Coalescing here is what makes it correct.
+    Prefers the persisted ``modified_at`` (set on create/update and backfilled
+    for older memories).  Falls back to ``updated_at``/``created_at`` for any
+    document that still lacks the field — e.g. one written by a copy that has
+    not yet run the backfill — so ordering is correct even mid-migration.
+    ``created_at`` is the stable tie-breaker (a batch of never-edited posts
+    keeps its newest-created order).
+
+    (moofile's ``.sort()`` floats a *missing* field to the top under descending
+    order, which is why coalescing here is required rather than a bare
+    ``.sort("modified_at")`` on a possibly-unmigrated corpus.)
     """
     created = _ts(doc, "created_at")
-    updated = _ts(doc, "updated_at")
-    return (updated or created, created)
+    activity = _ts(doc, "modified_at") or _ts(doc, "updated_at") or created
+    return (activity, created)
 
 
 def _levenshtein(a: str, b: str) -> int:
@@ -243,6 +248,7 @@ class BotTalkDB:
 
         Returns the stored document (with ``_id`` and auto-embedding populated).
         """
+        now = datetime.now(timezone.utc)
         doc = {
             "title": title,
             "summary": summary,
@@ -251,8 +257,10 @@ class BotTalkDB:
             "identity": identity,
             "status": status,
             "superseded_by": superseded_by,
-            "created_at": datetime.now(timezone.utc),
+            "created_at": now,
             "updated_at": None,
+            # Drives the "last modified" ordering; == created_at until an edit.
+            "modified_at": now,
             "update_history": [],
             "human_annotation": None,
             "search_text": self._build_search_text(summary, body),
@@ -361,6 +369,27 @@ class BotTalkDB:
 
         return results, total
 
+    def backfill_modified_at(self) -> int:
+        """Set ``modified_at`` on documents that predate the field (idempotent).
+
+        ``modified_at`` drives the "last modified" ordering.  Memories created
+        before the field existed get its historical value — ``updated_at`` if
+        the post was edited, else ``created_at`` — so an old corpus sorts
+        exactly as the previous read-time coalesce did.  Returns the number of
+        documents updated (0 on an already-migrated corpus), so it is safe to
+        run on every startup.  A document with neither timestamp (should not
+        exist) is left alone and simply falls back at read time.
+        """
+        stale = self.db.find({"modified_at": {"$exists": False}}).to_list()
+        migrated = 0
+        for d in stale:
+            value = d.get("updated_at") or d.get("created_at")
+            if value is None:
+                continue
+            self.db.update_one({"_id": d["_id"]}, set={"modified_at": value})
+            migrated += 1
+        return migrated
+
     def update_post(self, post_id: str, update: PostUpdate) -> dict | None:
         """Update a post, appending an update record to history.
 
@@ -425,6 +454,9 @@ class BotTalkDB:
 
         # Set updated_at
         set_fields["updated_at"] = now
+        # modified_at mirrors updated_at: any content/lifecycle change is a
+        # "modification", so an edit bubbles the memory up in last-modified order.
+        set_fields["modified_at"] = now
 
         # Build the update record
         prior = {field: doc.get(field) for field in changes_parts}
@@ -890,12 +922,26 @@ _db_instance: BotTalkDB | None = None
 
 
 def get_db(auto_embed: dict | None = None) -> BotTalkDB:
-    """Get or create the global BotTalkDB singleton."""
+    """Get or create the global BotTalkDB singleton.
+
+    On first open it also runs the idempotent ``modified_at`` backfill, so any
+    process that touches the DB (server, CLI/tool, API) self-heals a corpus
+    written before the field existed — no separate migration step needed.
+    """
     global _db_instance
     if _db_instance is None:
         db_path = os.environ.get("BOTTALK_DB_PATH", DEFAULT_DB_PATH)
         _db_instance = BotTalkDB(db_path=db_path, auto_embed=auto_embed)
         _db_instance.open()
+        try:
+            migrated = _db_instance.backfill_modified_at()
+            if migrated:
+                print(
+                    f"[BotTalk] backfilled modified_at on {migrated} memory(ies)",
+                    file=sys.stderr,
+                )
+        except Exception as exc:  # never block startup on a migration hiccup
+            print(f"[BotTalk] modified_at backfill skipped: {exc}", file=sys.stderr)
     return _db_instance
 
 

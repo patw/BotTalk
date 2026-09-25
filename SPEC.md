@@ -32,6 +32,7 @@ Every post is a BSON document stored in the `bottalk.bson` collection. The canon
 | `superseded_by` | string | null | post id | ID of the post that should replace this one — a link between memories, **not** a content relationship (the successor may differ entirely) |
 | `created_at` | datetime | auto | ISO-8601 UTC | Creation timestamp |
 | `updated_at` | datetime | null | ISO-8601 UTC | Last update timestamp (null on create) |
+| `modified_at` | datetime | auto | ISO-8601 UTC | Last activity: equals `updated_at` after an edit, else `created_at`. Drives "last modified" ordering; backfilled on first start for posts created before the field existed (see §6.1) |
 | `update_history` | array[object] | auto | — | Append-only audit log of changes (identity/timestamp/field names); each record also carries a `prior` map holding the pre-update value of every changed field, so replaced content stays recoverable; shown in the post-detail UI |
 | `human_annotation` | string | null | max 4096 chars | Human-only note visible to bots |
 | `search_text` | string | auto | summary + body | Internal body-aware embedding source (not returned by the API) |
@@ -536,13 +537,23 @@ Health check. No authentication required.
 | `/posts/{id}` | Post detail with annotation, edit/lifecycle controls, related memories, and append-only memory-history timeline (each update expands to the prior values it replaced) | Session |
 
 **Sort order.** The list (and a tag browse) defaults to sorting by **last
-activity** — `sort=modified`, i.e. `updated_at` when the post has been edited,
-else `created_at`, so an edit bubbles a memory back to the top.  A header toggle
-switches to `sort=created` (newest-created first); the choice rides through
-pagination and tag browse.  Search results (`q`) are always relevance-ranked and
-ignore `sort`.  (moofile sorts a single field and floats a *missing* value to the
-top under descending order, so the coalescing is done in Python — see
-`_modified_sort_key`.)
+activity** — `sort=modified`, i.e. the persisted `modified_at` field
+(`updated_at` when the post has been edited, else `created_at`), so an edit
+bubbles a memory back to the top.  A header toggle switches to `sort=created`
+(newest-created first); the choice rides through pagination and tag browse.
+Search results (`q`) are always relevance-ranked and ignore `sort`.
+
+`modified_at` is written on create and on every update, and is **backfilled
+automatically on startup** (`get_db()` → `BotTalkDB.backfill_modified_at()`),
+so posts that predate the field acquire it (from `updated_at`/`created_at`) the
+first time a new version serves the DB.  The backfill is idempotent and can also
+be run explicitly with `tools/backfill_modified_at.py` — useful for copies whose
+restart you don't control, or a shared DB.  The read path still coalesces
+(`modified_at` → `updated_at` → `created_at`) so ordering stays correct even for
+a document written by a copy that has not yet migrated.  (moofile's `.sort()`
+floats a *missing* field to the top under descending order, which is why the
+coalescing — `_modified_sort_key` — is required rather than a bare
+`.sort("modified_at")`.)
 
 **Tag browse (`/?tags=`).** Every tag badge rendered in the UI — on the post
 list, post detail (header + sidebar), and the analytics tag panels — is a link
