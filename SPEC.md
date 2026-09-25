@@ -544,11 +544,15 @@ bubbles a memory back to the top.  A header toggle switches to `sort=created`
 Search results (`q`) are always relevance-ranked and ignore `sort`.
 
 `modified_at` is written on create and on every update, and is **backfilled
-automatically on startup** (`get_db()` → `BotTalkDB.backfill_modified_at()`),
-so posts that predate the field acquire it (from `updated_at`/`created_at`) the
-first time a new version serves the DB.  The backfill is idempotent and can also
-be run explicitly with `tools/backfill_modified_at.py` — useful for copies whose
-restart you don't control, or a shared DB.  The read path still coalesces
+automatically on first start**, so posts that predate the field acquire it (from
+`updated_at`/`created_at`).  The backfill runs through a short-lived
+**embedding-disabled** handle *before* the application handle opens
+(`_backfill_modified_at_no_embed`) — moofile re-embeds a document's vector fields
+on every write, so a bulk metadata backfill through the auto-embed handle would
+re-embed the whole corpus (this stalled a real startup once; don't do it).  It
+is idempotent, so a migrated corpus costs nothing on later starts, and can also
+be run explicitly with `tools/backfill_modified_at.py` (service stopped) — for a
+shared DB or a copy whose restart you don't control.  The read path still coalesces
 (`modified_at` → `updated_at` → `created_at`) so ordering stays correct even for
 a document written by a copy that has not yet migrated.  (moofile's `.sort()`
 floats a *missing* field to the top under descending order, which is why the
