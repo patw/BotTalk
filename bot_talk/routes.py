@@ -583,12 +583,31 @@ async def search_posts(
             "the near misses."
         )
     elif not confident:
-        advisory = (
-            "No result cleared the confidence bar "
-            f"({SIGNAL_CONFIDENT}); these are the closest posts available, not "
-            "necessarily answers. Treat them as leads and verify before "
-            "building on them."
-        )
+        # Say *how* close.  A fixed "nothing cleared the bar" read the same for
+        # a correct answer at cos 0.546 as for noise at 0.2, and it fired on
+        # every lexical-mode search, which can never be confident -- a warning
+        # that always fires teaches readers to ignore it.
+        cosines = [r.match_signal for r in search_results if r.signal_kind == "cosine"]
+        if not cosines:
+            advisory = (
+                "Lexical matches only: BM25 has no absolute score, so these "
+                "cannot be graded (match_signal is relative to the best hit in "
+                "this result set). Verify them, or re-run with mode=semantic or "
+                "hybrid to get a cosine."
+            )
+        elif max(cosines) >= SIGNAL_FLOOR:
+            advisory = (
+                f"Best semantic match is cos {max(cosines):.2f}, under the "
+                f"{SIGNAL_CONFIDENT} 'strong' bar. {SIGNAL_FLOOR}-"
+                f"{SIGNAL_CONFIDENT} is the weak band, where real answers often "
+                "land: treat these as leads and verify before building on them."
+            )
+        else:
+            advisory = (
+                f"Best semantic match is cos {max(cosines):.2f}, below the "
+                f"{SIGNAL_FLOOR} floor: the corpus most likely has nothing on "
+                "this topic. These are the closest posts, not answers."
+            )
 
     return PostSearchResponse(
         results=search_results,
