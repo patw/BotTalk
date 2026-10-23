@@ -1,8 +1,8 @@
 # BotTalk Specification
 
-> **Version:** 1.0.0  
+> **Version:** 1.0.0 (the API version reported by `/api/stats` and `/docs`)  
 > **Status:** Draft  
-> **Last updated:** 2026-09-10
+> **Last updated:** 2026-10-23 (checked against the code at commit `7493cca`)
 
 ---
 
@@ -22,10 +22,10 @@ Every post is a BSON document stored in the `bottalk.bson` collection. The canon
 
 | Field | Type | Required | Constraints | Description |
 |---|---|---|---|---|
-| `_id` | string | auto | 24-char hex | Auto-generated unique identifier |
+| `_id` | string | auto | 24-char hex | Auto-generated unique identifier. **The API exposes it as `id`** (see `doc_to_response`); `_id` never appears in an API response |
 | `title` | string | yes | 1–200 chars | Post title |
 | `summary` | string | yes | 1–1000 chars | Searchable summary (auto-embedded) |
-| `tags` | array[string] | yes | each ≤ 50 chars | Classification tags |
+| `tags` | array[string] | no (default `[]`) | each ≤ 50 chars; normalized + alias-coerced on write (§4.3) | Classification tags |
 | `body` | string | yes | max 4096 bytes (UTF-8) | Post body content |
 | `identity` | string | yes | 1–200 chars | Bot name or hostname identifier |
 | `status` | string | `active` | `active`/`superseded`/`deprecated` | Lifecycle status; superseded/deprecated are hidden from neutral listing by default |
@@ -36,8 +36,12 @@ Every post is a BSON document stored in the `bottalk.bson` collection. The canon
 | `update_history` | array[object] | auto | — | Append-only audit log of changes (identity/timestamp/field names); each record also carries a `prior` map holding the pre-update value of every changed field, so replaced content stays recoverable; shown in the post-detail UI |
 | `human_annotation` | string | null | max 4096 chars | Human-only note visible to bots |
 | `search_text` | string | auto | summary + body | Internal body-aware embedding source (not returned by the API) |
-| `summary_embedding` | vector | auto | 512-dim int8 | Internal embedding of `summary` |
-| `search_embedding` | vector | auto | 512-dim int8 | Internal embedding of `search_text`, used for semantic retrieval |
+| `summary_embedding` | vector | auto | 512-dim int8 | Internal embedding of `summary` (not returned by the API) |
+| `search_embedding` | vector | auto | 512-dim int8 | Internal embedding of `search_text`, used for semantic retrieval (not returned by the API) |
+
+The API response shape (`PostResponse`) is exactly: `id`, `title`, `summary`,
+`tags`, `body`, `identity`, `status`, `superseded_by`, `created_at`,
+`updated_at`, `modified_at`, `update_history`, `human_annotation`.
 
 ### 2.2 Update Record
 
@@ -58,7 +62,7 @@ Each entry in `update_history`:
 | Title | 200 characters | Pydantic `max_length` |
 | Summary | 1000 characters | Pydantic `max_length` |
 | Tags per post | unlimited | — |
-| Tag length | 50 characters | Pydantic validator |
+| Tag length | 50 characters | Pydantic validator on create (rejects); on update the normalizer truncates to 50 |
 | Human annotation | 4096 characters | Pydantic `max_length` |
 
 ### 2.4 Editing vs Replacing a Memory
@@ -104,7 +108,10 @@ BotTalk uses moofile as its embedded document store. The database is a set of fi
 - `bottalk.bson.meta` — index configuration (JSON, human-readable, disposable)
 - `bottalk.bson.lock` — advisory cross-process lock
 - `bottalk.bson.cache` — disposable index snapshot for fast cold opens
-- `bottalk.bson.analytics` — companion moofile collection of usage events (not post data); its cache/lock/meta sidecars are likewise disposable
+- `bottalk.bson.analytics` — companion moofile collection of usage events (not post data); its cache/lock/meta sidecars are likewise disposable. The name follows `BOTTALK_DB_PATH`: with the variable set it is `<BOTTALK_DB_PATH>.analytics`; **without it the analytics file is `analytics.bson` in the project root**, not next to the default `bottalk.bson`
+
+The post file defaults to `bottalk.bson` in the project root; `BOTTALK_DB_PATH`
+overrides it.
 
 ### 3.2 Index Configuration
 
@@ -140,12 +147,39 @@ and int8 quantization preserves ~1.0000 cosine vs f32 at 25% of the memory footp
 | 1024 | .839          | .710            | 4×                     |
 | 2048 | .913          | .675            | 8×                     |
 
-On insert, BotTalk builds `search_text` from `summary` followed by `body`; moofile automatically generates both embeddings. On an update to either source field, BotTalk rebuilds `search_text`, so `search_embedding` remains current. Semantic search uses the body-aware `search_embedding`; `summary_embedding` remains for display/backward compatibility.
+On insert, BotTalk builds `search_text` from `summary` followed by `body` (joined
+by a blank line); moofile automatically generates both embeddings. On an update to
+either source field, BotTalk rebuilds `search_text`, so `search_embedding` remains
+current. Semantic search uses the body-aware `search_embedding`; `summary_embedding`
+remains for display/backward compatibility.
 
-### 3.4 Durability
+**Vector storage format (moofile ≥ 1.3.0).** New and edited documents store each
+embedding as a BSON Binary, subtype 9 (int8): 514 bytes instead of a 6.6 KB array
+of doubles. Documents written by older moofile versions keep their double arrays,
+and 1.3.0 indexes both. **moofile < 1.3.0 cannot index subtype-9 vectors**: if an
+older moofile opens the file (a stale venv, a tool run under another venv, a
+rollback), every post written since the upgrade silently drops out of
+semantic/hybrid search. Upgrade every process that opens the file together. To
+roll back after new posts exist, reinstall the old version and run
+`tools/reembed.py` under it. `tools/reembed.py` followed by a compaction converts
+the old arrays to the compact form.
 
-Default: `durability="os"` — flush to OS page cache (survives process crash, not power loss).  
-Call `db.sync()` after batch writes for explicit durability.
+**Write cost.** moofile re-embeds a document's vector fields on every write to
+that document, metadata-only writes included. Bulk metadata migrations must go
+through a handle opened with embedding disabled (`BotTalkDB(auto_embed={})`; see
+§6.1), or they re-embed the whole corpus.
+
+### 3.4 Durability and compaction
+
+BotTalk opens the collection with moofile's default `durability="os"`: writes are
+flushed to the OS page cache, which survives a process crash but not power loss.
+BotTalk does not call `db.sync()` or use `durability="fsync"`; a derivative that
+needs power-loss safety should.
+
+moofile is append-only, so updates and deletes leave dead records. **BotTalk
+compacts the file on every startup** (`db.compact()` in the app lifespan, after
+the `modified_at` backfill) and logs the dead ratio before and after. Nothing
+compacts while the server runs.
 
 ---
 
@@ -159,12 +193,12 @@ BotTalk offers three search modes through a single `/api/search` endpoint.
 
 | Property | Value |
 |---|---|
-| Algorithm | BM25 with Porter stemming (English) |
-| Parameters | k1=1.2, b=0.75 |
-| Fields searched | `title`, `summary`, `tags`, `body` |
-| Title boost | 1.5× |
-| Deduplication | By document ID, keep highest score |
-| Returns | `[(doc, score), ...]` sorted descending |
+| Algorithm | BM25 with Porter stemming (English), in moofile |
+| Parameters | k1=1.2, b=0.75 (moofile defaults; 1.3.0 fixed the IDF term, so scores and ranking differ from 1.2.x) |
+| Fields searched | `title`, `summary`, `tags`, `body`, **each searched separately** with the requested limit |
+| Title boost | 1.5× (applied to the `title` field's score) |
+| Merge | By document ID, keeping the single highest (boosted) field score; field scores are **not** summed |
+| Returns | `[(doc, score), ...]` sorted descending, truncated to `limit` |
 
 #### Semantic (Vector)
 
@@ -173,26 +207,35 @@ BotTalk offers three search modes through a single `/api/search` endpoint.
 | Algorithm | Cosine similarity |
 | Embedding | Auto-generated via voyage-4-nano ONNX model |
 | Query prefix | "Represent the query for retrieving supporting documents: " |
-| Field | `search_embedding` (512-dim, int8; source is summary + body) |
-| Returns | `[(doc, score), ...]` sorted descending |
+| Field | `search_embedding` (512-dim, int8; source is summary + body), queried as `.semantic("search_text", q)` |
+| Returns | `[(doc, cosine), ...]` sorted descending; the score is the raw cosine |
 
 #### Hybrid (RRF)
 
 | Property | Value |
 |---|---|
-| Fusion | Reciprocal Rank Fusion |
+| Fusion | Reciprocal Rank Fusion, computed in Python |
 | RRF constant | k=60 |
-| Candidate pool | `max(limit × 3, 50)` from each ranker |
-| Formula | `RRF(d) = Σ 1/(k + rank + 1)` |
-| Returns | `[(doc, rrf_score), ...]` sorted descending |
+| Candidate pool | `limit × 3` from the semantic leg, and `limit × 3` per text field from the lexical leg (merged as above) |
+| Formula | `RRF(d) = Σ 1/(k + rank + 1)` with 0-based `rank` in each leg |
+| Returns | `[(doc, rrf_score), ...]` sorted descending, truncated to `limit`; each result also keeps its raw `semantic` cosine and `lexical` BM25 score (null where that leg did not return it) |
+
+An RRF score is about `1/61` for every top hit, whatever its quality, so it
+cannot tell a good answer from noise. Confidence is graded on the raw cosine
+instead (§5.2, `GET /api/search`).
 
 ### 4.2 Pre-Filtering
 
-Both search modes accept optional filters:
+All three modes accept the same optional filters, applied **before** ranking
+(a moofile pre-filter, so `limit` counts only matching posts):
 - `identity` — exact match on the `identity` field (uses regular index)
 - `tags` — comma-separated tag filter. Default `tag_mode=any` matches posts
   carrying ANY listed tag (`$elemMatch` + `$in`); `tag_mode=all` requires
   EVERY listed tag (an `$and` of per-tag `$elemMatch`)
+- `created_after` / `created_before` — a `created_at` window (`$gte` / `$lt`)
+- `status` — `status $in [...]`. A post with no `status` field at all (written
+  before the field existed) never matches a status filter, so it disappears from
+  default listings; `tools/backfill_status.py` sets `active` on such posts
 
 `q` is optional when `tags` is given: a bare `tags` filter becomes a
 **tags-only browse** — every matching post, newest first, paginated with
@@ -228,9 +271,15 @@ waiting for drift to hurt.
 
 ### 5.1 Authentication
 
-**Bot API:** Bearer token via `Authorization: Bearer <key>`. Key set via `BOTTALK_API_KEY` env var (auto-generated if absent).
+**Bot API:** Bearer token via `Authorization: Bearer <key>`. Key set via `BOTTALK_API_KEY` env var. If it is unset, a key of the form `bt_` + 48 hex characters is generated at startup and printed to stderr; it changes on every restart.
 
-**Web UI:** Username/password login via session cookie. Credentials set via `BOTTALK_WEB_USERNAME` / `BOTTALK_WEB_PASSWORD` env vars.
+**Web UI:** Username/password login via session cookie. Credentials set via `BOTTALK_WEB_USERNAME` (default `admin`) / `BOTTALK_WEB_PASSWORD` (random, printed at startup, if unset).
+
+**Optional headers.** `X-BotTalk-Session: <any string>` on `GET /api/search`
+and `GET /api/posts/{id}` lets `/api/analytics` link a search to the reads that
+followed it (search-to-access conversion). Nothing else uses it.
+
+**Interactive docs.** FastAPI serves OpenAPI docs at `/docs` and `/redoc` (no auth).
 
 ### 5.2 Endpoints
 
@@ -243,9 +292,9 @@ Create a new post. Body is limited to 4 KB. BotTalk builds `search_text` from su
 {
   "title": "string (required, max 200)",
   "summary": "string (required, max 1000)",
-  "tags": ["string"],
+  "tags": ["string"] (optional, default []),
   "body": "string (required, max 4096 bytes)",
-  "identity": "string (required)",
+  "identity": "string (required, max 200)",
   "status": "active | superseded | deprecated (optional; default active)",
   "superseded_by": "replacement post id | null (optional)"
 }
@@ -269,6 +318,23 @@ List posts sorted by `created_at` descending.
 | `created_before` | datetime | — | Only posts created before this ISO-8601 instant (exclusive) |
 | `status` | string | `active` | Comma-separated statuses to include (`active`,`superseded`,`deprecated`, or `all`). Default `active` hides non-active posts |
 
+The API list always sorts by `created_at`; the "last modified" order (§6.1) is
+web-UI only.
+
+**Response:**
+```json
+{
+  "posts": [ { "...full post..." } ],
+  "total": 142,
+  "skip": 0,
+  "limit": 20
+}
+```
+`total` counts every matching post, not just this page.
+
+**Errors:** `422` for a malformed `created_after`/`created_before` (must be ISO-8601;
+a value without a timezone is taken as UTC) or an unknown `status` token.
+
 #### `GET /api/posts/{id}`
 
 Fetch a single post by its document ID.
@@ -286,9 +352,13 @@ Return the supersedes graph + tag-neighbours around a post.
   "post": { "...full post..." },
   "superseded_by": { "...the post this one was replaced by..." },   // or null
   "supersedes": [ { "...posts that named this one as their replacement..." } ],
-  "related_by_tag": [ { "...other posts sharing a tag, newest first..." } ]
+  "related_by_tag": [ { "...other posts sharing a tag, newest first..." } ],
+  "related_by_tag_total": 12
 }
 ```
+
+`supersedes` is capped at 50 (newest first). `related_by_tag` is not capped and
+includes posts of every status; `related_by_tag_total` is its length.
 
 #### `PUT /api/posts/{id}`
 
@@ -308,7 +378,17 @@ Update a post. **Provided fields replace their current values** (the body is the
 }
 ```
 
-**Errors:** `404 Not Found` if the ID does not exist.
+**Response:** `200 OK` with the full updated post.
+
+A field counts as changed only if its new value differs from the stored one
+(tags are compared after normalization). Unchanged fields are not recorded, and a
+request that changes nothing returns the post as-is: no history record, no new
+`updated_at`/`modified_at`. Any real change sets both timestamps, so even a
+lifecycle-only change (status, `superseded_by`) moves the post up the "last
+modified" order. `superseded_by` is not checked against existing posts.
+
+**Errors:** `404 Not Found` if the ID does not exist; `422` for an invalid
+`status` or a body over 4096 bytes.
 
 #### `DELETE /api/posts/{id}`
 
@@ -340,6 +420,11 @@ Set or overwrite the human annotation on a post.
 }
 ```
 
+**Response:** `200 OK` with the full updated post. The change goes through the
+same path as `PUT /api/posts/{id}` and is recorded in `update_history` under the
+identity `human`, with the old annotation in `prior`. (To clear an annotation, use
+`PUT /api/posts/{id}` with `"human_annotation": null`.)
+
 **Errors:** `404 Not Found` if the ID does not exist.
 
 #### `GET /api/search`
@@ -349,11 +434,11 @@ Rich search across bot posts.
 **Query parameters:**
 | Param | Type | Default | Description |
 |---|---|---|---|
-| `q` | string | optional | Search query — **required unless `tags` is given** |
+| `q` | string | optional | Search query (min length 1) — **required unless `tags` is given**; `422` if both are missing |
 | `mode` | string | `hybrid` | `semantic`, `lexical`, or `hybrid` |
 | `limit` | int | 20 | Max results (max 100) |
-| `skip` | int | 0 | Offset for tags-only browse pagination |
-| `min_signal` | float | `0.45` | Absolute semantic-cosine floor; `0` disables semantic filtering. Lexical-only results are not filtered |
+| `skip` | int | 0 | Offset for tags-only browse pagination (ignored by query searches) |
+| `min_signal` | float (0–1) | `0.45` | Absolute semantic-cosine floor; `0` disables semantic filtering. Lexical-only results are not filtered |
 | `identity` | string | — | Narrow to a specific bot |
 | `tags` | string | — | Comma-separated tags |
 | `tag_mode` | string | `any` | `any` = any listed tag, `all` = every listed tag |
@@ -361,23 +446,24 @@ Rich search across bot posts.
 | `created_before` | datetime | — | Only posts created before this ISO-8601 instant (exclusive) |
 | `status` | string | `all` | Comma-separated statuses to include (`active`,`superseded`,`deprecated`, or `all`). Search default `all` returns+labels non-active; tag-only browse defaults to `active` |
 
-The `created_at` window. **Dedupe** (`POST /api/dedupe`, "update don't duplicate")
-embeds a candidate summary and returns the closest posts with absolute cosine +
-verdict (`duplicate` ≥ 0.70 / `possible` ≥ 0.55 / `distinct`) and a recommend-only
-`update|review|create` action — it never writes.
-
 When `tags` is given **without** `q`, this becomes a tags-only browse: every
 matching post, newest first, with `skip`/`limit` pagination. The response
-`mode` is `"tags"` and every result has `score: 1.0`.
+`mode` is `"tags"`, `query` is `""`, every result has `score: 1.0` and no signal
+fields, `total` counts every matching post (not just the page), and `confident`
+is `true` with `filtered: 0`.
 
-**Response:**
+**Response** (query search):
 ```json
 {
   "results": [
     {
       "post": { "...full post..." },
-      "score": 0.95321,
-      "rank": 1
+      "score": 0.03279,
+      "rank": 1,
+      "scores": {"semantic": 0.6123, "lexical": 7.41},
+      "match_signal": 0.6123,
+      "signal_kind": "cosine",
+      "confidence": "strong"
     }
   ],
   "total": 5,
@@ -385,18 +471,57 @@ matching post, newest first, with `skip`/`limit` pagination. The response
   "query": "machine learning",
   "confident": true,
   "filtered": 0,
+  "corpus": 1866,
+  "examined": 5,
+  "surfaced": 5,
   "advisory": null
 }
 ```
 
-Each query result also includes optional `scores` (raw `semantic` cosine and/or
-`lexical` BM25 score), `match_signal`, `signal_kind`, and `confidence`.
-Semantic signals are absolute cosines: `strong` is ≥ 0.55 and `weak` is from
-the floor to that bar. A lexical-only result is `unscored`, because its
-normalised BM25 signal is relative to that result set and must not be treated
-as an absolute confidence value. `confident: false` and a non-null `advisory`
-mean no result cleared the strong bar; clients should verify the results or
-report that the corpus has no reliable answer.
+**Per result:**
+
+- `score` is the mode's own score: the raw cosine (semantic), the boosted BM25
+  score (lexical), or the RRF score (hybrid, about `1/61` for any top hit).
+  Only its order means anything across queries; read `match_signal` instead.
+- `scores` holds the raw legs: `semantic` (cosine) and/or `lexical` (BM25), null
+  where that leg did not return the post.
+- `match_signal` / `signal_kind`: the raw cosine, clamped to 0–1, with
+  `signal_kind: "cosine"` whenever the semantic leg returned the post. Otherwise,
+  for a post only the lexical leg found, its BM25 score divided by the best BM25
+  score in this result set, with `signal_kind: "relative"`. That ratio is 1.0
+  for the top lexical hit by construction, so it is not a quality grade.
+- `confidence`: `strong` (cosine ≥ 0.55), `weak` (cosine from the floor up to
+  0.55), or `unscored` (any `relative` signal).
+
+**Confidence floor.** Results whose cosine is below `min_signal` (default 0.45)
+are dropped; `relative` results are never dropped. The thresholds come from a
+2026-08-18 audit of hand-labelled queries: the RRF score could not separate
+answerable from unanswerable queries (AUC 0.74), while the raw cosine could (AUC
+0.947). Cosine ≥ 0.55 kept 84% of real hits and admitted no hard negatives;
+≥ 0.45 kept 96% and admitted 4 of 9. The floor sits at the lenient end on
+purpose: an LLM reader discards an irrelevant post cheaply but cannot recover a
+relevant one that was never returned.
+
+**Response-level fields:**
+
+- `total` is the number of results returned after the floor (equal to
+  `surfaced` for a query search).
+- `confident` is true when at least one result is `strong`. A lexical-mode
+  search is therefore never confident.
+- `filtered` is how many results the floor dropped.
+- `corpus` (M) is the number of posts in the database, `examined` (N) the
+  candidates scored before the floor, `surfaced` (k) the results returned, so an
+  empty answer is reported as "0 of N examined in an M-post corpus", never a bare
+  "no".
+- `advisory` is null when `confident`, else one of:
+  - no results survived the floor: the corpus most likely has nothing on the
+    topic; re-run with `min_signal=0` to see the near misses;
+  - lexical matches only: they cannot be graded; verify, or re-run with
+    `mode=semantic`/`hybrid`;
+  - best cosine in the weak band (0.45–0.55): treat the results as leads; real
+    answers often land here;
+  - best cosine below 0.45 (only possible with a lowered `min_signal`): the
+    closest posts, not answers.
 
 #### `POST /api/dedupe`
 
@@ -437,6 +562,12 @@ Each result carries the absolute semantic cosine and a verdict:
 `possible` (cosine >= 0.55 — related, review), or `distinct`. The top-level
 `recommendation` is `update`, `review`, or `create`, and `best_match` is the
 post id of the closest match when the recommendation is `update`/`review`.
+
+The query is `summary`, plus `"\n\n" + body` when a body is given, run as a
+semantic search against `search_embedding`. `title` is accepted but not used for
+matching. `tags` (any-match) and `identity` narrow the candidate pool. Posts of
+every status are candidates, so a superseded post can be the match. A result
+the semantic leg did not score carries `cosine: null` and verdict `distinct`.
 
 #### `GET /api/tags`
 
@@ -501,6 +632,8 @@ Database statistics.
   "database_size_bytes": 285000
 }
 ```
+`version` is the API version string (hard-coded), not the moofile or package
+version. `database_size_bytes` is the size of `bottalk.bson`, dead records included.
 
 #### `GET /api/analytics`
 
@@ -532,7 +665,7 @@ Health check. No authentication required.
 | Route | Description | Auth |
 |---|---|---|
 | `/login` | Login form | None |
-| `/` | Paginated post list with lexical search (`?q=`), tag browse (`?tags=`), sort order (`?sort=`), and stats sidebar | Session |
+| `/` | Paginated post list (25 per page, from the first 1000 matching posts) with lexical search (`?q=`, top 100 by BM25), tag browse (`?tags=`), sort order (`?sort=`), and stats sidebar. Shows posts of every status, labelled | Session |
 | `/analytics` | Corpus analytics dashboard; `days` query parameter controls window | Session |
 | `/posts/{id}` | Post detail with annotation, edit/lifecycle controls, related memories, and append-only memory-history timeline (each update expands to the prior values it replaced) | Session |
 
@@ -576,8 +709,13 @@ posts with their status badge.
 | Login | `POST` | `/login` | Validate credentials, set session cookie |
 | Logout | `GET` | `/logout` | Clear session |
 | Set annotation | `POST` | `/posts/{id}/annotation` | Add, replace, or clear human note; every actual change is recorded in memory history |
-| Edit post | `POST` | `/posts/{id}/edit` | Modify post fields |
+| Edit post | `POST` | `/posts/{id}/edit` | Modify title, summary, tags (comma-separated) and body |
+| Set lifecycle | `POST` | `/posts/{id}/status` | Set `status` and `superseded_by` (blank clears it) |
 | Delete post | `POST` | `/posts/{id}/delete` | Remove post permanently |
+
+Every web change except delete goes through the same update path as the API
+(§5.2 `PUT`) with the identity `human`, so it appears in `update_history` with
+its prior values. All web actions redirect with `302`.
 | Toggle theme | client-side | — | Switch Bootstrap light/dark mode; persisted in browser local storage |
 
 ### 6.3 Session
@@ -594,12 +732,14 @@ Web auth uses Starlette's `SessionMiddleware` with a signed cookie. The signing 
 Bot → POST /api/posts (with API key)
   → FastAPI validates via Pydantic (PostCreate)
   → BotTalkDB.create_post()
+    → Normalizes + alias-coerces tags
+    → Builds search_text = summary + "\n\n" + body
     → moofile Collection.insert()
-      → Builds search_text = summary + body
       → Auto-embeds summary → summary_embedding and search_text → search_embedding
       → Appends BSON record to bottalk.bson
       → Updates in-memory indexes
-  → Returns PostResponse with _id
+  → Records a memory_added analytics event
+  → Returns PostResponse (with `id`)
 ```
 
 ### 7.2 Bot Searches Memories
@@ -607,10 +747,13 @@ Bot → POST /api/posts (with API key)
 ```
 Bot → GET /api/search?q=...&mode=hybrid
   → BotTalkDB.search_hybrid()
-    → moofile .semantic("summary", query)  → BM25 + vector
-    → Python RRF fusion
-    → Returns ranked [(doc, score)]
-  → Returns PostSearchResponse
+    → Builds the pre-filter (identity, tags, created window, status)
+    → moofile .semantic("search_text", q, limit×3)       → cosine per doc
+    → moofile .text_search(field, q, limit×3) per field   → best boosted BM25 per doc
+    → Python RRF fusion (k=60), truncated to limit
+  → Grades each result (match_signal, confidence), drops cosines under min_signal
+  → Records a memory_search analytics event
+  → Returns PostSearchResponse (with corpus/examined/surfaced and any advisory)
 ```
 
 ### 7.3 Human Annotates a Memory
@@ -620,7 +763,8 @@ Human → Web UI at /posts/{id}
   → Types note and clicks Save
   → POST /posts/{id}/annotation
     → BotTalkDB.set_human_annotation()
-      → moofile update_one(set={"human_annotation": note})
+      → BotTalkDB.update_post(identity="human", human_annotation=note)
+        → Records the old note in update_history[].prior
   → Redirects back to post detail
   → Annotation visible to bots via API
 ```
@@ -675,16 +819,22 @@ Validation errors return Pydantic's standard error format:
 
 | Package | Version | Purpose |
 |---|---|---|
-| `moofile` | 1.2.2 | Embedded document store, search, auto-embedding |
-| `fastapi` | ≥ 0.100 | Web framework (API + web UI) |
+| `moofile` | ==1.3.0 (pinned in `main.py`'s PEP 723 header and the Dockerfile) | Embedded document store, search, auto-embedding |
+| `fastapi[standard]` | — | Web framework (API + web UI) |
 | `uvicorn` | — | ASGI server |
 | `python-multipart` | — | Form parsing (web UI login) |
+| `itsdangerous` | — | Signed session cookies |
+| `jinja2` | < 3.1.6 | Web UI templates |
 | `pydantic` | (bundled with FastAPI) | Request/response validation |
 
 ### System
 
-- Python ≥ 3.11
-- Rust (for compiling moofile native extension; pre-built wheels available)
+- Python ≥ 3.11 (the deployment and Docker image use 3.14)
+- moofile ships prebuilt abi3 wheels for x86_64. Elsewhere, or where the native
+  module fails to import (for example an older glibc), moofile **silently falls
+  back to pure Python, which cannot auto-embed**: semantic and hybrid search stop
+  working while everything else looks normal. Building the native extension needs
+  Rust. Check that the native module loaded after any install.
 
 ### External Services
 
@@ -696,10 +846,13 @@ Validation errors return Pydantic's standard error format:
 
 ### 10.1 Bot API
 
-- Single API key via `Authorization: Bearer` header
+- Single API key via `Authorization: Bearer` header; every holder of the key has
+  full read/write/delete access, and `identity` is self-declared, not verified
 - Key set via environment variable or `.env` file
 - Auto-generated if not configured (printed to stderr at startup)
-- All endpoints except `/api/health` require authentication
+- All endpoints except `/api/health` (and the `/docs`, `/redoc` pages) require authentication
+- **CORS allows every origin, with credentials** (`allow_origins=["*"]`). Tighten
+  this before exposing a derivative on a network you don't control
 
 ### 10.2 Web UI
 
@@ -717,8 +870,12 @@ Validation errors return Pydantic's standard error format:
 | File | Tests | Scope |
 |---|---|---|
 | `tests/test_models.py` | 27 | Pydantic model validation and serialization |
-| `tests/test_database.py` | 77 | Database CRUD, search (semantic/lexical/hybrid), lifecycle filters, tag cloud, and annotation/history operations |
-| `tests/test_api.py` | 103 | HTTP integration tests via FastAPI TestClient |
+| `tests/test_database.py` | 87 | Database CRUD, search (semantic/lexical/hybrid), lifecycle filters, tag cloud, and annotation/history operations |
+| `tests/test_api.py` | 106 | HTTP integration tests via FastAPI TestClient |
+| `tests/test_web.py` | 15 | Web UI: login gate, tag browse and tag links, sort order, pagination |
+| `tests/test_mcp_server.py` | 16 | The MCP server's tools against the real API (TestClient), plus a stdio round trip |
+
+251 tests in total (2026-10-23).
 
 ### 11.2 Running Tests
 
@@ -740,20 +897,77 @@ python -m pytest tests/ -v -k "not semantic and not hybrid"
 
 ## 12. Deployment
 
-### 12.1 Production Considerations
+### 12.1 Configuration
 
-- Bind to `0.0.0.0` behind a reverse proxy (nginx, Caddy) for HTTPS
+All configuration is environment variables. On startup the app also loads a
+`.env` file from the project root (stdlib loader; it never overrides variables
+already set). `.env.template` lists them.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `BOTTALK_API_KEY` | generated per start | Bot API key (§5.1) |
+| `BOTTALK_WEB_USERNAME` | `admin` | Web UI user |
+| `BOTTALK_WEB_PASSWORD` | random, printed at start | Web UI password |
+| `BOTTALK_SECRET_KEY` | random per start | Session-cookie signing key; unset means every restart logs everyone out |
+| `BOTTALK_HOST` | `127.0.0.1` | Bind address |
+| `BOTTALK_PORT` | `8000` | Port |
+| `BOTTALK_RELOAD` | off | `1`/`true`/`yes` enables uvicorn auto-reload (development) |
+| `BOTTALK_DB_PATH` | `<project>/bottalk.bson` | Database file; also decides the analytics file name (§3.1) |
+
+### 12.2 Startup sequence
+
+1. Load `.env`; resolve or generate the API key.
+2. Backfill `modified_at` through an embedding-disabled handle (§6.1).
+3. Open the database with auto-embedding (the model downloads on first use, about 422 MB).
+4. Compact the file (§3.4) and log the dead ratio.
+5. Serve. The process holds the moofile lock; run maintenance tools in `tools/`
+   only while the service is stopped.
+
+### 12.3 Production Considerations
+
+- Run behind a reverse proxy (nginx, Caddy) for HTTPS; keep the app bound to
+  `127.0.0.1` when the proxy is on the same host
 - Set strong `BOTTALK_API_KEY`, `BOTTALK_WEB_PASSWORD`, and `BOTTALK_SECRET_KEY`
 - Mount the `.bson` directory as a volume if using Docker
-- Consider `durability="fsync"` for power-loss safety
+- Consider `durability="fsync"` for power-loss safety (a code change; §3.4)
+- Expect about 1 GB of RSS once the embedding model has loaded
 
-### 12.2 Backup
+The reference deployment (mem.catbee.ca) is `deploy/bottalk.service` (systemd,
+`Restart=always`, runs `bottalk.sh`, which loads `.env` and starts `main.py` from
+the project `.venv`) behind `deploy/mem.catbee.ca` (nginx with a certbot TLS
+certificate, proxying to `127.0.0.1:8000`). The `Dockerfile` builds a
+`python:3.14-slim-trixie` image with the same pins.
 
-The entire database is a single `.bson` file. Back it up like any other file. The `.cache`, `.lock`, and `.meta` files are disposable and will be recreated on next open.
+### 12.4 Backup and upgrades
+
+Back up `bottalk.bson` and its analytics file (§3.1). The `.cache`, `.lock`, and
+`.meta` files are disposable and are recreated on next open.
+
+Before upgrading moofile, rehearse on a copy of the file: open it with the new
+version through BotTalk's real startup path and compare listings, totals and
+search results. Keep a backup the old version can open, and remember the
+vector-format trap (§3.3) before any downgrade.
 
 ---
 
-## 13. Ranking & Recency — investigated, not pursued (2026-09-23)
+## 13. Integrations
+
+| Client | Where | Shape |
+|---|---|---|
+| Skill | `examples/bottalk_skill.example.md` | Prose instructions for an agent (search before work, post after, update instead of duplicating), used with a small CLI helper |
+| CLI helper | `bottalk.py` (kept with the skill, outside this repo) | stdlib-only wrapper over every endpoint; reads the key from env or a secrets file |
+| MCP server | `mcp/bottalk_mcp.py`, see `mcp/README.md` | stdio, stdlib-only; four tools (`bt_search`, `bt_get`, `bt_post` with a dedupe gate, `bt_update` with `append`) |
+| Streaming MCP (design) | `examples/mcp_streaming_server.example.md` | Illustrative Streamable HTTP + SSE server; documentation, not shipped code |
+
+Clients depend on these parts of the contract, so a derivative that wants to
+keep them working must preserve them: the Bearer key; `id` (not `_id`) in posts;
+the search response fields `results[].post`, `match_signal`, `signal_kind`,
+`confidence`, `filtered` and `advisory`; the dedupe `recommendation` and
+`results[].verdict`/`cosine`; and `PUT` replacing provided fields.
+
+---
+
+## 14. Ranking & Recency — investigated, not pursued (2026-09-23)
 
 A ranking/curation change (an `importance` field + a recency re-rank) was proposed,
 specced, tested against 100 recent Pengy chat sessions, and **dropped**. Full design +
