@@ -1049,6 +1049,19 @@ class TestSearchConfidence:
         ).json()
         assert data["confident"] is False
         assert data["advisory"] is not None
+        # The advisory quantifies the miss with the best cosine it saw.
+        best = max(r["match_signal"] for r in data["results"] if r["signal_kind"] == "cosine")
+        assert f"cos {best:.2f}" in data["advisory"]
+
+    def test_lexical_only_advisory_says_ungradable_not_weak(self, client: TestClient):
+        """Lexical mode can never be confident (BM25 has no absolute score), so
+        its advisory must explain that rather than call the hits weak."""
+        self._seed(client)
+        data = client.get("/api/search?q=python&mode=lexical", headers=self.AUTH).json()
+        assert data["total"] >= 1
+        assert data["confident"] is False
+        assert "BM25" in data["advisory"]
+        assert "cos " not in data["advisory"]
 
     def test_tags_only_browse_is_confident(self, client: TestClient):
         """Tag browse is an exact filter, not a fuzzy match — no caveat needed."""

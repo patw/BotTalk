@@ -1,7 +1,7 @@
 # BotTalk — Docker
 #
 # Multi-stage build:
-#   1. Build stage — installs Rust + compiles moofile native extension
+#   1. Build stage — pip-installs the Python dependencies
 #   2. Runtime stage — minimal image with just the Python app
 #
 # Usage:
@@ -13,25 +13,24 @@
 #       bottalk
 
 # ── Build stage ────────────────────────────────────────────────────────────
-FROM python:3.14-slim-bookworm AS builder
+FROM python:3.14-slim-trixie AS builder
 
 WORKDIR /build
 
-# Install Rust (needed to compile moofile's native extension from source)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Rust toolchain
-RUN curl --proto '=https' --tls v1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
-
-# Install moofile from PyPI (it will build the native extension from source
-# since no pre-built wheel matches the container's Python exactly)
-RUN pip install --no-cache-dir moofile==1.2.2 "fastapi[standard]" uvicorn python-multipart itsdangerous "jinja2<3.1.6"
+# Install moofile from PyPI.  It ships prebuilt abi3 wheels for x86_64 and
+# aarch64, so nothing is compiled here.  There is no sdist: on any other
+# architecture pip falls back to the pure-Python wheel, which cannot autoembed —
+# BotTalk needs one of the two native platforms.
+#
+# The base image must be trixie (glibc 2.41), not bookworm (2.36): the wheels
+# are tagged manylinux_2_28 but the native library references glibc 2.38's
+# __isoc23_strtol* symbols (unversioned, so auditwheel misses them).  On older
+# glibc the native module fails to import and moofile silently falls back to
+# pure Python, with no autoembedding.  True of moofile 1.2.5 and 1.3.0.
+RUN pip install --no-cache-dir moofile==1.3.0 "fastapi[standard]" uvicorn python-multipart itsdangerous "jinja2<3.1.6"
 
 # ── Runtime stage ──────────────────────────────────────────────────────────
-FROM python:3.14-slim-bookworm AS runtime
+FROM python:3.14-slim-trixie AS runtime
 
 WORKDIR /app
 
